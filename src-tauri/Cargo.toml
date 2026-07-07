@@ -2,9 +2,9 @@
 name = "ai-stock-agent"
 version = "0.1.0"
 description = "AI 炒股 Agent 系统 - Windows 桌面 GUI 应用（React + Tauri）"
-authors = ["AI Stock Agent"]
+authors = ["bibu-by"]
 license = "MIT"
-repository = ""
+repository = "https://github.com/bibu-by/ai-stock-agent"
 default-run = "ai-stock-agent"
 edition = "2021"
 rust-version = "1.60"

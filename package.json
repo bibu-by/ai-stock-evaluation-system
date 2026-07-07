@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "description": "AI 炒股 Agent 系统 - Windows 桌面 GUI 应用（React + Tauri）",
-  "author": "AI Stock Agent",
+  "author": "bibu-by",
   "license": "MIT",
   "keywords": [
     "ai-stock",
@@ -18,13 +18,13 @@
     "llm",
     "chatbot"
   ],
-  "homepage": "https://github.com/your-username/ai-stock-agent",
+  "homepage": "https://github.com/bibu-by/ai-stock-agent",
   "repository": {
     "type": "git",
-    "url": "https://github.com/your-username/ai-stock-agent.git"
+    "url": "https://github.com/bibu-by/ai-stock-agent.git"
   },
   "bugs": {
-    "url": "https://github.com/your-username/ai-stock-agent/issues"
+    "url": "https://github.com/bibu-by/ai-stock-agent/issues"
   },
   "scripts": {
     "dev": "vite",
