@@ -1,0 +1,56 @@
+# Logs
+logs
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# Dependencies
+node_modules/
+.pnp
+.pnp.js
+
+# Build output
+dist/
+dist-ssr/
+*.local
+
+# Editor
+.vscode/*
+!.vscode/extensions.json
+.idea
+.DS_Store
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Tauri
+src-tauri/target/
+src-tauri/Cargo.lock
+src-tauri/gen/schemas/
+
+# Local app data
+app-data/
+backups/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# AI assistant / IDE tooling directories
+.reasonix/
+.trae/
+.trae-html-share-packages/
+reasonix.toml
+
+# Visual Studio / VS workspace (keep .vscode/extensions.json if desired)
+.vs/
+*.vsidx
+*.vswsx
+
+# Local spec / docs work artifacts
+.trae/specs/

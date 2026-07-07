@@ -1,0 +1,26 @@
+[package]
+name = "ai-stock-agent"
+version = "0.1.0"
+description = "AI 炒股 Agent 系统 - Windows 桌面 GUI 应用（React + Tauri）"
+authors = ["AI Stock Agent"]
+license = "MIT"
+repository = ""
+default-run = "ai-stock-agent"
+edition = "2021"
+rust-version = "1.60"
+
+[build-dependencies]
+tauri-build = { version = "1.5.2", features = [] }
+
+[dependencies]
+serde_json = "1.0"
+serde = { version = "1.0", features = ["derive"] }
+tauri = { version = "1.6.7", features = ["dialog-all", "fs-all", "notification-all", "path-all", "shell-open"] }
+chrono = { version = "0.4", features = ["serde"] }
+dirs = "5.0"
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+tokio = { version = "1", features = ["full"] }
+keyring = "3"
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]

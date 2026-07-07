@@ -1,0 +1,125 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* 浅色主题 */
+    --background: 0 0% 96%;
+    --foreground: 222 22% 14%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 22% 14%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 22% 14%;
+
+    --primary: 222 47% 30%;
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 220 14% 93%;
+    --secondary-foreground: 222 22% 20%;
+
+    --muted: 220 14% 94%;
+    --muted-foreground: 220 9% 46%;
+
+    --accent: 217 91% 60%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 84% 60%;
+    --destructive-foreground: 210 40% 98%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 210 40% 98%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 210 40% 98%;
+
+    --border: 220 13% 86%;
+    --input: 220 13% 88%;
+    --ring: 217 91% 60%;
+
+    --radius: 0.5rem;
+  }
+
+  .dark {
+    /* 深色主题 - 参考 Codex 工具界面 */
+    --background: 220 18% 10%; /* #0f1115 */
+    --foreground: 210 20% 92%;
+
+    --card: 222 16% 13%; /* #161922 */
+    --card-foreground: 210 20% 92%;
+
+    --popover: 222 16% 13%;
+    --popover-foreground: 210 20% 92%;
+
+    --primary: 199 89% 48%; /* #1e9af3 */
+    --primary-foreground: 210 40% 98%;
+
+    --secondary: 222 14% 18%;
+    --secondary-foreground: 210 20% 92%;
+
+    --muted: 222 14% 17%;
+    --muted-foreground: 220 9% 60%;
+
+    --accent: 199 89% 48%;
+    --accent-foreground: 210 40% 98%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 210 40% 98%;
+
+    --success: 142 71% 45%;
+    --success-foreground: 210 40% 98%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 210 40% 98%;
+
+    --border: 222 14% 22%;
+    --input: 222 14% 20%;
+    --ring: 199 89% 48%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  html,
+  body,
+  #root {
+    @apply h-full;
+  }
+  body {
+    @apply bg-background text-foreground antialiased;
+    font-feature-settings: "rlig" 1, "calt" 1;
+  }
+  /* 滚动条 */
+  ::-webkit-scrollbar {
+    width: 8px;
+    height: 8px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-border rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-muted-foreground/40;
+  }
+}
+
+@layer components {
+  /* 通用卡片容器 */
+  .surface {
+    @apply bg-card text-card-foreground border border-border rounded-lg;
+  }
+  /* 数字字体 */
+  .num {
+    @apply font-mono tabular-nums;
+  }
+  /* 渐隐分隔线 */
+  .divider {
+    @apply h-px bg-border;
+  }
+}
