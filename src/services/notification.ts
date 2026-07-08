@@ -45,7 +45,7 @@ export async function showNotification(title: string, body: string): Promise<voi
  * Agent 巡检完成通知
  */
 export function notifyAgentRunFinished(jobName: string, summary: string): Promise<void> {
-  return showNotification("AI 炒股 Agent 巡检完成", `${jobName}\n${summary}`);
+  return showNotification("AI 炒股评估系统 巡检完成", `${jobName}\n${summary}`);
 }
 
 /**

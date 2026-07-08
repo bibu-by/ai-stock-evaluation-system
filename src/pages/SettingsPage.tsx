@@ -344,7 +344,7 @@ export function SettingsPage() {
       <Card className="p-4">
         <h2 className="mb-2 text-sm font-semibold">关于</h2>
         <div className="space-y-1 text-xs text-muted-foreground">
-          <div>AI 炒股 Agent 系统 v0.1.0</div>
+          <div>AI 炒股评估系统 v0.1.0</div>
           <div>定位：个人投资记录 + AI 投研助手 + 定时 Agent 监控</div>
           <div className="mt-2 text-[10px]">
             本系统为辅助分析与记录工具，不承诺收益，不直接替用户自动交易，所有买卖决策必须由用户确认。

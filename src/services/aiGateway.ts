@@ -702,7 +702,7 @@ async function* callGeminiStream(
 
 // ====== 业务专用：自然语言解析为结构化草稿 ======
 
-const PARSE_SYSTEM_PROMPT = `你是 AI 炒股 Agent 系统的输入解析器。
+const PARSE_SYSTEM_PROMPT = `你是 AI 炒股评估系统的输入解析器。
 你的任务是把用户的自然语言转换为结构化 JSON 数据，不要回答用户问题。
 
 支持的意图（intent）：

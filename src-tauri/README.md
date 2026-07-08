@@ -1,4 +1,4 @@
-# AI 炒股 Agent - Tauri 桌面外壳
+# AI 炒股评估系统 - Tauri 桌面外壳
 
 本项目是一款 Windows 桌面 GUI 应用：React 构建 GUI 界面，Tauri 把界面打包为真正的桌面程序。
 桌面外壳负责本地文件读写、API Key 安全存储、系统通知、行情 HTTP 代理等原生能力。

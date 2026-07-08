@@ -1,4 +1,4 @@
-// AI 炒股 Agent 系统 - Tauri 主进程入口
+// AI 炒股评估系统 - Tauri 主进程入口
 // 这是 Windows 桌面 GUI 应用的原生能力层：
 //   - 创建桌面窗口
 //   - 管理本地文件（AppData 目录）

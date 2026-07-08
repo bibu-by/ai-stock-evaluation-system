@@ -8,7 +8,7 @@
     "withGlobalTauri": false
   },
   "package": {
-    "productName": "AI Stock Agent",
+    "productName": "AI Stock Evaluation System",
     "version": "0.1.0"
   },
   "tauri": {
@@ -40,7 +40,7 @@
         "icons/icon.ico"
       ],
       "identifier": "com.ai-stock-agent.app",
-      "longDescription": "AI 炒股 Agent 系统 - 本地运行的个人投资助手",
+      "longDescription": "AI 炒股评估系统 - 本地运行的个人投资助手",
       "macOS": {
         "entitlements": null,
         "exceptionDomain": "",
@@ -49,7 +49,7 @@
         "signingIdentity": null
       },
       "resources": [],
-      "shortDescription": "AI 炒股 Agent 系统",
+      "shortDescription": "AI 炒股评估系统",
       "targets": ["nsis", "msi"],
       "windows": {
         "certificateThumbprint": null,
@@ -65,7 +65,7 @@
         "fullscreen": false,
         "height": 860,
         "resizable": true,
-        "title": "AI Stock Agent",
+        "title": "AI Stock Evaluation System",
         "width": 1440,
         "minWidth": 1080,
         "minHeight": 720,

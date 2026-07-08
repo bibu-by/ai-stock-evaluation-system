@@ -285,7 +285,7 @@ export const mockMessages: ChatMessage[] = [
     role: "system",
     type: "text",
     content:
-      "欢迎使用 AI 炒股 Agent 系统。你可以直接告诉我你的本金、现金和持仓，我会帮你结构化记录。所有关键操作都需要你确认后才会写入。",
+      "欢迎使用 AI 炒股评估系统。你可以直接告诉我你的本金、现金和持仓，我会帮你结构化记录。所有关键操作都需要你确认后才会写入。",
     createdAt: now,
   },
   {

@@ -1,6 +1,6 @@
-# AI 炒股 Agent 系统
+# AI 炒股评估系统
 
-> 一个本地运行的个人投资助手桌面应用：持仓管理 + AI 聊天 + 定时 Agent 巡检 + 投资记忆库。
+> 一个本地运行的个人投资评估助手桌面应用：持仓管理 + AI 聊天 + 定时 Agent 巡检 + 投资记忆库。
 > Windows 桌面 GUI（Tauri + React + TypeScript），双击 exe 即可用，无需部署服务。
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](./LICENSE)
@@ -11,7 +11,7 @@
 
 ## 这是什么
 
-AI 炒股 Agent 系统是一款面向个人投资者的**本地桌面应用**。它不是传统的股票软件，也不是简单的记账工具，而是一个结合了「持仓记录、行情监控、AI 聊天、定时 Agent、投资记忆库」的个人投资工作站。
+AI 炒股评估系统是一款面向个人投资者的**本地桌面应用**。它不是传统的股票软件，也不是简单的记账工具，而是一个结合了「持仓记录、行情监控、AI 聊天、定时 Agent、投资记忆库」的个人投资工作站。
 
 核心理念：
 
@@ -111,7 +111,7 @@ src-tauri/
 
 ## 数据存储
 
-所有数据保存在本地（Windows: `%APPDATA%\AI Stock Agent\`），以 JSON 文件形式存储，无需安装数据库。前端不直接传文件路径，通过 Tauri 命令按 key 白名单读写。
+所有数据保存在本地（Windows: `%APPDATA%\AI Stock Agent\`，旧版本目录名，保持兼容），以 JSON 文件形式存储，无需安装数据库。前端不直接传文件路径，通过 Tauri 命令按 key 白名单读写。
 
 API Key 不写入 JSON，通过 `keyring` 存入 Windows Credential Manager。
 

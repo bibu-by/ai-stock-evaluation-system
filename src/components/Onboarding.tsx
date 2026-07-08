@@ -165,7 +165,7 @@ export function Onboarding() {
       <div className="w-full max-w-2xl space-y-4">
         {/* 头部 */}
         <div className="text-center">
-          <h1 className="text-2xl font-bold">AI 炒股 Agent 系统</h1>
+          <h1 className="text-2xl font-bold">AI 炒股评估系统</h1>
           <p className="mt-1 text-xs text-muted-foreground">
             Windows 桌面 GUI 应用 · 首次启动引导
           </p>

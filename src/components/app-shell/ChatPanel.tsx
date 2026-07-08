@@ -165,7 +165,7 @@ export function ChatPanel() {
         }
       }
 
-      const systemPrompt = `你是 AI 炒股 Agent 系统的助手。用户刚才发送了一条消息，系统已经识别其意图。请基于以下信息给用户一个有帮助的、自然的中文回复：
+      const systemPrompt = `你是 AI 炒股评估系统的助手。用户刚才发送了一条消息，系统已经识别其意图。请基于以下信息给用户一个有帮助的、自然的中文回复：
 - 用户原始输入：${text}
 - 系统识别的意图：${draft.intent}
 - 系统识别的摘要：${draft.summary}
