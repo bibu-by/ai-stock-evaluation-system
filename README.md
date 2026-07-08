@@ -37,7 +37,7 @@ AI 炒股 Agent 系统是一款面向个人投资者的**本地桌面应用**。
 | Tauri 代理 AI 调用 | API Key 经 Rust 端代理，前端不直接接触 |
 
 ## 截图 / 界面布局
-
+![alt text](image.png)
 ```text
 左侧：功能导航（总览 / 持仓 / 交易 / Agent / 记忆 / 模型 / 数据源 / 设置）
 中间：当前功能页面（持仓卡片、资产总览、Agent 任务等）
@@ -107,7 +107,6 @@ src-tauri/
 ├── src/main.rs      # Rust 命令（数据读写 / 行情代理 / API Key / AI 代理 / 通知）
 ├── Cargo.toml
 └── tauri.conf.json
-开发文档/             # 设计文档、优化建议、学习路线
 ```
 
 ## 数据存储
@@ -115,14 +114,6 @@ src-tauri/
 所有数据保存在本地（Windows: `%APPDATA%\AI Stock Agent\`），以 JSON 文件形式存储，无需安装数据库。前端不直接传文件路径，通过 Tauri 命令按 key 白名单读写。
 
 API Key 不写入 JSON，通过 `keyring` 存入 Windows Credential Manager。
-
-## 开发文档
-
-- [系统介绍](./开发文档/系统介绍.md) — 功能全景与设计理念
-- [项目架构](./开发文档/项目架构.md) — 模块划分与数据流
-- [优化建议](./开发文档/优化建议.md) — 对照 NextChat / a-stock-data 的差距分析
-- [优化路线](./开发文档/优化路线.md) — 已完成项与后续 Phase 规划
-- [从 0 到 1 搭建路线](./开发文档/从0到1搭建路线.md) — 新手学习路径
 
 ## 贡献
 
