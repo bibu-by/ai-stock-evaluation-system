@@ -34,6 +34,19 @@ export function AppShell({ children }: { children: React.ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [agentJobs]);
 
+  // 风险提醒定时检查：每 60 秒刷新行情并评估提醒条件
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      try {
+        await useAppStore.getState().refreshPrices();
+        await useAppStore.getState().checkAlerts();
+      } catch (e) {
+        console.warn("[AppShell] 风险提醒检查失败", e);
+      }
+    }, 60_000);
+    return () => clearInterval(timer);
+  }, []);
+
   useEffect(() => {
     return () => scheduler.stop();
   }, []);

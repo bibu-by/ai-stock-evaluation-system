@@ -35,6 +35,7 @@ import {
 import { uid, nowIso, cloneJson } from "@/lib/utils";
 import { getBatchQuotes, setMarketMode } from "@/services/marketData";
 import { runAgentJob, calculateNextRunAt } from "@/services/agentRunner";
+import { notifyAlertTriggered } from "@/services/notification";
 import { defaultConfig } from "@/domain/config";
 import { ACCOUNT_SNAPSHOT_RETAIN_DAYS } from "@/domain/constants";
 
@@ -131,6 +132,7 @@ interface AppState {
   addAlert: (alert: Omit<AlertRule, "id" | "createdAt" | "updatedAt" | "triggerCount">) => Promise<void>;
   updateAlert: (id: string, patch: Partial<AlertRule>) => Promise<void>;
   removeAlert: (id: string) => Promise<void>;
+  checkAlerts: () => Promise<void>;
 
   // 记忆
   memories: Memory[];
@@ -685,6 +687,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     const positions = get().positions;
     if (positions.length === 0) return;
     const quotes = await getBatchQuotes(positions.map((p) => p.symbol));
+    // 行情全部为空时抛错，让调用方（RefreshButton / 自动刷新）能给用户反馈
+    if (Object.keys(quotes).length === 0) {
+      throw new Error("未获取到任何行情数据，请检查股票代码或网络");
+    }
     const list = positions.map((p) => {
       const q = quotes[p.symbol];
       // 拿不到行情 或 返回 0 价格（非交易时段部分股票可能返回 0），保持原样不覆盖
@@ -923,6 +929,91 @@ export const useAppStore = create<AppState>((set, get) => ({
     const list = get().alerts.filter((a) => a.id !== id);
     await saveAlerts(list);
     set({ alerts: list });
+  },
+
+  // 评估所有已启用的风险提醒，触发条件时推送系统通知
+  async checkAlerts() {
+    const { alerts, positions, account } = get();
+    const enabledAlerts = alerts.filter((a) => a.enabled);
+    if (enabledAlerts.length === 0) return;
+
+    // 计算当前总资产
+    const totalAssets =
+      (account?.cashBalance ?? 0) +
+      positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
+    const principal = account?.cumulativePrincipal ?? 0;
+    // 总资产回撤百分比（相对本金）
+    const drawdownPct = principal > 0
+      ? Math.max(0, (principal - totalAssets) / principal) * 100
+      : 0;
+
+    const now = Date.now();
+    const COOLDOWN_MS = 5 * 60_000; // 同一提醒 5 分钟内不重复触发
+
+    for (const alert of enabledAlerts) {
+      // 冷却：上次触发 5 分钟内跳过
+      if (alert.lastTriggeredAt) {
+        const lastTs = new Date(alert.lastTriggeredAt).getTime();
+        if (now - lastTs < COOLDOWN_MS) continue;
+      }
+
+      const { metric, operator, value, symbol } = alert.condition;
+
+      // 确定要检查的持仓
+      const targetPositions = symbol
+        ? positions.filter((p) => p.symbol === symbol || p.symbol === symbol.replace(/\.(SH|SZ|BJ)$/i, ""))
+        : positions;
+
+      let triggeredValue: number | null = null;
+      let triggeredLabel = "";
+
+      if (metric === "total_drawdown") {
+        triggeredValue = drawdownPct;
+        triggeredLabel = `总资产回撤 ${drawdownPct.toFixed(2)}%`;
+      } else if (targetPositions.length > 0) {
+        // 取最严重的（最接近触发条件的值）
+        for (const p of targetPositions) {
+          let currentValue: number | null = null;
+          if (metric === "price") {
+            currentValue = p.currentPrice;
+          } else if (metric === "change_rate") {
+            currentValue = p.todayChangeRate ?? 0;
+          } else if (metric === "pnl_rate") {
+            currentValue = p.unrealizedPnlRate ?? 0;
+          }
+          if (currentValue === null) continue;
+
+          const isTriggered =
+            operator === "above" ? currentValue > value :
+            operator === "below" ? currentValue < value :
+            false;
+
+          if (isTriggered) {
+            triggeredValue = currentValue;
+            triggeredLabel = `${p.name}(${p.symbol}) ${metric === "price" ? "价格" : metric === "change_rate" ? "涨跌幅" : "收益率"} ${currentValue.toFixed(2)}`;
+            break;
+          }
+        }
+      }
+
+      if (triggeredValue !== null) {
+        // 推送系统通知
+        await notifyAlertTriggered(alert.name, `${triggeredLabel} ${operator === "above" ? "高于" : "低于"} ${value}`);
+        // 更新触发记录
+        await get().updateAlert(alert.id, {
+          lastTriggeredAt: nowIso(),
+          triggerCount: alert.triggerCount + 1,
+        });
+        // 写入聊天消息
+        await get().addMessage({
+          id: uid("msg"),
+          role: "agent",
+          type: "agent_run",
+          content: `**风险提醒触发**：${alert.name}\n\n${triggeredLabel} ${operator === "above" ? "高于" : "低于"} 阈值 ${value}`,
+          createdAt: nowIso(),
+        });
+      }
+    }
   },
 
   // ====== 记忆 ======

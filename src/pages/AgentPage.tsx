@@ -39,6 +39,7 @@ export function AgentPage() {
 
   const [dialogOpen, setDialogOpen] = useState(false);
   const [alertDialogOpen, setAlertDialogOpen] = useState(false);
+  const [activeTab, setActiveTab] = useState("jobs");
   const [form, setForm] = useState({
     name: "",
     triggerType: "interval" as TriggerType,
@@ -105,7 +106,7 @@ export function AgentPage() {
         </Button>
       </div>
 
-      <Tabs value="jobs" onValueChange={() => {}}>
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="jobs">定时任务</TabsTrigger>
           <TabsTrigger value="runs">执行日志</TabsTrigger>

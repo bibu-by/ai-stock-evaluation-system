@@ -43,15 +43,15 @@ export function sleep(ms: number): Promise<void> {
 }
 
 /**
- * 是否在 Tauri 桌面环境
- */
-export function isTauri(): boolean {
-  return typeof window !== "undefined" && "__TAURI__" in window;
-}
-
-/**
  * 浅克隆 JSON
  */
 export function cloneJson<T>(value: T): T {
   return JSON.parse(JSON.stringify(value));
+}
+
+/**
+ * 是否在 Tauri 桌面环境
+ */
+export function isTauri(): boolean {
+  return typeof window !== "undefined" && "__TAURI__" in window;
 }

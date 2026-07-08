@@ -61,6 +61,11 @@ export function RefreshButton({ size = "sm", className }: RefreshButtonProps) {
       await refreshPrices();
     } catch (e) {
       console.warn("[RefreshButton] 手动刷新行情失败", e);
+      // 给用户可见反馈，避免点击无反应
+      const msg = (e as Error)?.message || "刷新行情失败";
+      if (msg.includes("未获取到任何行情数据") || msg.includes("认证失败")) {
+        alert(msg);
+      }
     } finally {
       setRefreshing(false);
     }

@@ -236,6 +236,19 @@ fn sina_code(symbol: &str) -> String {
         format!("sh{}", code)
     } else if let Some(code) = symbol.strip_suffix(".SZ") {
         format!("sz{}", code)
+    } else if let Some(code) = symbol.strip_suffix(".BJ") {
+        format!("bj{}", code)
+    } else if symbol.len() == 6 && symbol.chars().all(|c| c.is_ascii_digit()) {
+        // 裸 6 位数字（无市场后缀）按 A 股规则推断前缀，避免新浪返回 sys_auth="FAILED"
+        if symbol.starts_with('6') {
+            format!("sh{}", symbol)
+        } else if symbol.starts_with('0') || symbol.starts_with('3') {
+            format!("sz{}", symbol)
+        } else if symbol.starts_with('8') || symbol.starts_with('4') {
+            format!("bj{}", symbol)
+        } else {
+            symbol.to_lowercase()
+        }
     } else {
         symbol.to_lowercase()
     }
@@ -497,6 +510,10 @@ async fn get_batch_quotes(symbols: Vec<String>, client: tauri::State<'_, reqwest
         return Err(format!("行情接口返回错误状态: {}", res.status()));
     }
     let text = res.text().await.map_err(|e| e.to_string())?;
+    // 检测新浪认证失败：批量请求中包含无效代码时，新浪返回 sys_auth="FAILED" 并拒绝整个请求
+    if text.contains("hq_str_sys_auth=\"FAILED\"") {
+        return Err("行情接口认证失败：请检查股票代码格式（如 600169 需为 sh600169）".to_string());
+    }
     let mut result = Vec::new();
     for (i, symbol) in symbols.iter().enumerate() {
         let code = &codes[i];
