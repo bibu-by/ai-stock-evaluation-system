@@ -18,6 +18,7 @@ export const mockConfig: AppConfig = {
   primaryMarket: "A_SHARE",
   tradingHoursOnlyByDefault: true,
   autoRefreshIntervalSec: 0,
+  closeToTray: true,
 };
 
 export const mockAccount: Account = {

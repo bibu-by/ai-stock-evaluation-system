@@ -30,6 +30,8 @@ export interface AppConfig {
   tradingHoursOnlyByDefault: boolean;
   // 行情自动刷新间隔（秒）。0=关闭自动刷新，>0=按间隔秒数自动刷新（仅交易时段）
   autoRefreshIntervalSec: number;
+  // 关闭窗口时隐藏到系统托盘（Agent 保持后台运行），默认 true
+  closeToTray?: boolean;
   // 数据导出路径
   exportDir?: string;
 }
@@ -42,6 +44,7 @@ export const defaultConfig: AppConfig = {
   primaryMarket: "A_SHARE",
   tradingHoursOnlyByDefault: true,
   autoRefreshIntervalSec: 0,
+  closeToTray: true,
 };
 
 export const defaultMarketDataSource: MarketDataSource = {

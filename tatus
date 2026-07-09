@@ -1,0 +1,22 @@
+ src-tauri/Cargo.toml                         |    3 [32m+[m[31m-[m
+ src-tauri/src/main.rs                        |  780 [32m+++++++++++[m[31m-[m
+ src-tauri/tauri.conf.json                    |    6 [32m+[m
+ src/App.tsx                                  |    2 [32m+[m
+ src/components/app-shell/AppShell.tsx        |   70 [32m+[m[31m-[m
+ src/components/app-shell/ChatPanel.tsx       |   34 [32m+[m
+ src/components/app-shell/Sidebar.tsx         |    2 [32m+[m
+ src/components/dashboard/PositionCard.tsx    |  148 [32m++[m[31m-[m
+ src/components/decision/DecisionNoteCard.tsx |   73 [32m+[m[31m-[m
+ src/domain/agent.ts                          |   96 [32m+[m[31m-[m
+ src/domain/chat.ts                           |    2 [32m+[m
+ src/domain/config.ts                         |    3 [32m+[m
+ src/domain/position.ts                       |   25 [32m+[m[31m-[m
+ src/mock/mockData.ts                         |    1 [32m+[m
+ src/pages/AgentPage.tsx                      |  151 [32m++[m[31m-[m
+ src/pages/PositionsPage.tsx                  |   29 [32m+[m[31m-[m
+ src/pages/SettingsPage.tsx                   |   99 [32m+[m[31m-[m
+ src/services/agentRunner.ts                  |  119 [32m+[m[31m-[m
+ src/services/aiGateway.ts                    |  831 [32m+++[m[31m----------[m
+ src/services/marketData.ts                   |  134 [32m+[m[31m-[m
+ src/store/appStore.ts                        | 1721 [32m++++++++[m[31m------------------[m
+ 21 files changed, 2385 insertions(+), 1944 deletions(-)

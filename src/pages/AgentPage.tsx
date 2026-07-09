@@ -12,13 +12,16 @@ import { Select } from "@/components/ui/select";
 import { Dialog, DialogHeader, DialogTitle, DialogContent, DialogFooter } from "@/components/ui/dialog";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { AgentTimeline } from "@/components/dashboard/AgentTimeline";
-import { Bot, Plus, Play, Trash2, AlertTriangle } from "lucide-react";
+import { Bot, Plus, Play, Trash2, AlertTriangle, Check } from "lucide-react";
 import {
   TRIGGER_TYPE_LABEL,
   AGENT_SCOPE_LABEL,
+  ANALYSIS_STRATEGY_LABEL,
+  ANALYSIS_STRATEGY_DESC,
   type AgentJob,
   type TriggerType,
   type AgentScope,
+  type AnalysisStrategy,
 } from "@/domain/agent";
 import { formatDateTime } from "@/lib/format";
 import { ALERT_LEVEL_LABEL, ALERT_LEVEL_COLOR, type AlertLevel } from "@/domain/agent";
@@ -28,6 +31,7 @@ export function AgentPage() {
     agentJobs,
     agentRuns,
     alerts,
+    models,
     addAgentJob,
     updateAgentJob,
     removeAgentJob,
@@ -48,13 +52,17 @@ export function AgentPage() {
     scope: "all_positions" as AgentScope,
     symbol: "",
     tradingHoursOnly: true,
+    analysisStrategy: "standard_patrol" as AnalysisStrategy,
+    debateEnabled: false,
+    debateModelIds: [] as string[],
   });
   const [alertForm, setAlertForm] = useState({
     name: "",
     symbol: "",
-    metric: "price" as "price" | "change_rate" | "pnl_rate" | "total_drawdown",
+    metric: "price" as "price" | "change_rate" | "pnl_rate" | "total_drawdown" | "ma_cross_up" | "ma_cross_down",
     operator: "below" as "above" | "below",
     value: "",
+    maWindow: "20",
     level: "warning" as AlertLevel,
   });
 
@@ -69,26 +77,32 @@ export function AgentPage() {
       scope: form.scope,
       symbol: form.scope === "single_symbol" ? form.symbol : undefined,
       tradingHoursOnly: form.tradingHoursOnly,
+      analysisStrategy: form.analysisStrategy,
+      debateModelIds: form.debateEnabled && form.debateModelIds.length >= 2 ? form.debateModelIds : undefined,
     });
     setDialogOpen(false);
-    setForm({ name: "", triggerType: "interval", intervalMinutes: "60", fixedTimes: "09:35,14:50", scope: "all_positions", symbol: "", tradingHoursOnly: true });
+    setForm({ name: "", triggerType: "interval", intervalMinutes: "60", fixedTimes: "09:35,14:50", scope: "all_positions", symbol: "", tradingHoursOnly: true, analysisStrategy: "standard_patrol", debateEnabled: false, debateModelIds: [] });
   };
 
   const submitAlert = async () => {
-    if (!alertForm.name || !alertForm.value) return;
+    const isMaCross = alertForm.metric === "ma_cross_up" || alertForm.metric === "ma_cross_down";
+    if (!alertForm.name || (!isMaCross && !alertForm.value)) return;
     await addAlert({
       name: alertForm.name,
       enabled: true,
       condition: {
         symbol: alertForm.symbol || undefined,
         metric: alertForm.metric,
-        operator: alertForm.operator,
-        value: Number(alertForm.value),
+        operator: isMaCross
+          ? (alertForm.metric === "ma_cross_up" ? "cross_up" : "cross_down")
+          : alertForm.operator,
+        value: Number(alertForm.value) || 0,
+        ...(isMaCross ? { maWindow: Number(alertForm.maWindow) || 20 } : {}),
       },
       level: alertForm.level,
     });
     setAlertDialogOpen(false);
-    setAlertForm({ name: "", symbol: "", metric: "price", operator: "below", value: "", level: "warning" });
+    setAlertForm({ name: "", symbol: "", metric: "price", operator: "below", value: "", maWindow: "20", level: "warning" });
   };
 
   return (
@@ -162,7 +176,10 @@ export function AgentPage() {
                   <div className="flex-1 min-w-0">
                     <div className="text-sm font-medium">{a.name}</div>
                     <div className="text-[10px] text-muted-foreground">
-                      条件：{a.condition.metric} {a.condition.operator} {a.condition.value}
+                      条件：
+                      {a.condition.metric === "ma_cross_up" || a.condition.metric === "ma_cross_down"
+                        ? `${a.condition.metric === "ma_cross_up" ? "MA 上穿" : "MA 下穿"} MA${a.condition.maWindow ?? 20}`
+                        : `${a.condition.metric} ${a.condition.operator} ${a.condition.value}`}
                       {a.condition.symbol ? ` · ${a.condition.symbol}` : ""}
                     </div>
                   </div>
@@ -252,6 +269,19 @@ export function AgentPage() {
               />
             </div>
           )}
+          <div className="space-y-1">
+            <Label>分析策略</Label>
+            <Select
+              value={form.analysisStrategy}
+              onChange={(e) => setForm({ ...form, analysisStrategy: e.target.value as AnalysisStrategy })}
+            >
+              {(Object.keys(ANALYSIS_STRATEGY_LABEL) as AnalysisStrategy[]).map((s) => (
+                <option key={s} value={s}>
+                  {ANALYSIS_STRATEGY_LABEL[s]} — {ANALYSIS_STRATEGY_DESC[s]}
+                </option>
+              ))}
+            </Select>
+          </div>
           <label className="flex items-center gap-2 text-xs">
             <Switch
               checked={form.tradingHoursOnly}
@@ -259,6 +289,81 @@ export function AgentPage() {
             />
             <span className="text-muted-foreground">仅在交易时段执行</span>
           </label>
+          <div className="space-y-2 rounded border border-border p-2">
+            <label className="flex items-center gap-2 text-xs">
+              <Switch
+                checked={form.debateEnabled}
+                onCheckedChange={(v) => setForm({ ...form, debateEnabled: v, debateModelIds: v ? form.debateModelIds : [] })}
+              />
+              <span className="text-muted-foreground">辩论模式（多模型独立分析后汇总共识/分歧）</span>
+            </label>
+            {form.debateEnabled && (
+              <div className="space-y-2">
+                <div className="flex items-center gap-1.5 text-xs text-amber-400">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  <span>⚠️ 辩论模式调用次数翻倍 = 费用翻倍</span>
+                </div>
+                <Label>选择辩论模型（2-3 个）</Label>
+                {models.length === 0 ? (
+                  <p className="text-[11px] text-muted-foreground">
+                    尚未配置任何模型，请先在「模型设置」中添加。
+                  </p>
+                ) : (
+                  <div className="max-h-40 space-y-1 overflow-y-auto">
+                    {models.map((m) => {
+                      const selected = form.debateModelIds.includes(m.id);
+                      return (
+                        <button
+                          key={m.id}
+                          type="button"
+                          onClick={() => {
+                            const next = selected
+                              ? form.debateModelIds.filter((id) => id !== m.id)
+                              : [...form.debateModelIds, m.id];
+                            setForm({ ...form, debateModelIds: next });
+                          }}
+                          className={`flex w-full items-center gap-2 rounded border px-2 py-1.5 text-left text-xs transition-colors ${
+                            selected
+                              ? "border-primary bg-primary/10"
+                              : "border-border hover:bg-muted"
+                          }`}
+                        >
+                          <span
+                            className={`flex h-4 w-4 shrink-0 items-center justify-center rounded border ${
+                              selected
+                                ? "border-primary bg-primary text-primary-foreground"
+                                : "border-muted-foreground/40"
+                            }`}
+                          >
+                            {selected && <Check className="h-3 w-3" />}
+                          </span>
+                          <span className="min-w-0 flex-1 truncate">
+                            {m.displayName ?? m.modelName}
+                            <span className="text-muted-foreground"> · {m.providerLabel}</span>
+                          </span>
+                          {!m.isEnabled && (
+                            <Badge variant="outline" className="text-[9px]">
+                              已禁用
+                            </Badge>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+                {form.debateModelIds.length > 0 && form.debateModelIds.length < 2 && (
+                  <p className="text-[11px] text-amber-400">
+                    至少选择 2 个模型才会启用辩论，否则按单模型执行。
+                  </p>
+                )}
+                {form.debateModelIds.length > 3 && (
+                  <p className="text-[11px] text-amber-400">
+                    建议选择 2-3 个模型，过多会显著增加费用。
+                  </p>
+                )}
+              </div>
+            )}
+          </div>
         </DialogContent>
         <DialogFooter>
           <Button variant="ghost" onClick={() => setDialogOpen(false)}>取消</Button>
@@ -291,6 +396,8 @@ export function AgentPage() {
                 <option value="change_rate">今日涨跌幅(%)</option>
                 <option value="pnl_rate">持仓收益率(%)</option>
                 <option value="total_drawdown">总资产回撤(%)</option>
+                <option value="ma_cross_up">MA 上穿</option>
+                <option value="ma_cross_down">MA 下穿</option>
               </Select>
             </div>
             <div className="space-y-1">
@@ -306,13 +413,27 @@ export function AgentPage() {
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div className="space-y-1">
-              <Label>数值</Label>
-              <Input
-                type="number"
-                value={alertForm.value}
-                onChange={(e) => setAlertForm({ ...alertForm, value: e.target.value })}
-                placeholder="如：1600"
-              />
+              {alertForm.metric === "ma_cross_up" || alertForm.metric === "ma_cross_down" ? (
+                <>
+                  <Label>MA 窗口</Label>
+                  <Input
+                    type="number"
+                    value={alertForm.maWindow}
+                    onChange={(e) => setAlertForm({ ...alertForm, maWindow: e.target.value })}
+                    placeholder="如：20"
+                  />
+                </>
+              ) : (
+                <>
+                  <Label>数值</Label>
+                  <Input
+                    type="number"
+                    value={alertForm.value}
+                    onChange={(e) => setAlertForm({ ...alertForm, value: e.target.value })}
+                    placeholder="如：1600"
+                  />
+                </>
+              )}
             </div>
             <div className="space-y-1">
               <Label>提醒等级</Label>

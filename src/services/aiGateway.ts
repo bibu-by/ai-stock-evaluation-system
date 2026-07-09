@@ -1,181 +1,51 @@
-// AI Gateway - 多厂商模型适配层
-// 业务代码只调用统一接口，不同厂商在适配层处理差异。
+// AI Gateway - 多厂商模型适配聚合层
+// 业务代码只调用统一接口（defaultAiGateway），不同厂商的实现拆分到 ./ai/providers/* 下：
+//   - OpenAI 兼容（OpenAI / DeepSeek / Qwen / GLM / Kimi / Ollama / 自定义）→ ./ai/providers/openai
+//   - Anthropic Claude → ./ai/providers/anthropic
+//   - Google Gemini → ./ai/providers/gemini
 // 桌面 GUI 版本：API Key 优先从系统安全凭据读取（apiKeyRef），其次回退到模型 JSON 里的 apiKey。
+//
+// 本文件作为聚合层：re-export 公共类型与纯函数，组装 defaultAiGateway，
+// 并保留业务专用函数（parseUserInput / runAgentAnalysis）。
 
-import type {
-  AiModelConfig,
-  ChatCompletionRequest,
-  ChatCompletionResponse,
-  StreamChatChunk,
-} from "@/domain/ai";
+import type { AiModelConfig } from "@/domain/ai";
 import type { ParsedDraft } from "@/domain/chat";
-import type { SuggestionType } from "@/domain/agent";
-import { isTauri } from "@/lib/utils";
-import { invoke } from "@tauri-apps/api/tauri";
-import { readApiKey } from "./localStore";
+import type {
+  SuggestionType,
+  AnalysisDimensions,
+  AnalysisStrategy,
+  DebateConsensus,
+  DebateModelConclusion,
+  DebateResult,
+} from "@/domain/agent";
+import { DEBATE_CONSENSUS_LABEL, SUGGESTION_TYPE_TO_DECISION } from "@/domain/agent";
 
-// ====== 会话级 Token 用量统计 ======
-// 用于在聊天面板底部展示"本次会话累计消耗"。
-// 重置时机：用户切换会话 / 主动点击"清空会话" / 应用重启。
-interface SessionUsage {
-  promptTokens: number;
-  completionTokens: number;
-  totalTokens: number;
-  callCount: number;
-  byModel: Record<string, { prompt: number; completion: number; total: number; count: number }>;
-}
+import type { AiGateway } from "./ai/types";
+import { extractJsonFromText } from "./ai/internal";
+import {
+  callOpenAICompatible,
+  callOpenAICompatibleStream,
+} from "./ai/providers/openai";
+import { callAnthropicStream } from "./ai/providers/anthropic";
+import { callGeminiStream } from "./ai/providers/gemini";
 
-// ====== SSE 流式响应帧类型 ======
-// 仅约束各厂商流式响应中实际读取的字段，未读取字段保持宽松以便兼容厂商扩展。
+// ====== 公共类型 re-export ======
+export type { AiGateway, SessionUsage } from "./ai/types";
 
-/** OpenAI 兼容流式帧（DeepSeek / OpenAI / 通义等） */
-interface OpenAIStreamFrame {
-  choices?: Array<{
-    delta?: { content?: string };
-    finish_reason?: string | null;
-  }>;
-  usage?: {
-    prompt_tokens?: number;
-    completion_tokens?: number;
-    total_tokens?: number;
-  };
-}
+// ====== 公共纯函数 / 状态管理 re-export ======
+// Task 5 已从 aiGateway.ts 导出 extractJsonFromText / parseSseDataLines / recordUsage 供测试，
+// 拆分后这些函数实现迁移到 ./ai/internal，这里 re-export 保持公共 API 不变。
+export {
+  extractJsonFromText,
+  getSessionUsage,
+  parseSseDataLines,
+  recordUsage,
+  resetSessionUsage,
+} from "./ai/internal";
 
-/** Anthropic 流式事件帧 */
-interface AnthropicStreamFrame {
-  type?: string;
-  message?: { usage?: { input_tokens?: number } };
-  delta?: { text?: string; stop_reason?: string };
-  usage?: { output_tokens?: number };
-}
-
-/** Gemini SSE 流式帧 */
-interface GeminiStreamFrame {
-  candidates?: Array<{
-    content?: { parts?: Array<{ text?: string }> };
-    finishReason?: string;
-  }>;
-  usageMetadata?: {
-    promptTokenCount?: number;
-    candidatesTokenCount?: number;
-    totalTokenCount?: number;
-  };
-}
-
-let sessionUsage: SessionUsage = {
-  promptTokens: 0,
-  completionTokens: 0,
-  totalTokens: 0,
-  callCount: 0,
-  byModel: {},
-};
-
-export function getSessionUsage(): SessionUsage {
-  // 返回浅拷贝，避免外部直接修改内部状态
-  return {
-    promptTokens: sessionUsage.promptTokens,
-    completionTokens: sessionUsage.completionTokens,
-    totalTokens: sessionUsage.totalTokens,
-    callCount: sessionUsage.callCount,
-    byModel: Object.fromEntries(
-      Object.entries(sessionUsage.byModel).map(([k, v]) => [k, { ...v }])
-    ),
-  };
-}
-
-export function resetSessionUsage(): void {
-  sessionUsage = {
-    promptTokens: 0,
-    completionTokens: 0,
-    totalTokens: 0,
-    callCount: 0,
-    byModel: {},
-  };
-}
-
-function recordUsage(model: AiModelConfig, usage: ChatCompletionResponse["usage"]): void {
-  if (!usage) return;
-  const p = usage.promptTokens || 0;
-  const c = usage.completionTokens || 0;
-  const t = usage.totalTokens || p + c;
-  sessionUsage.promptTokens += p;
-  sessionUsage.completionTokens += c;
-  sessionUsage.totalTokens += t;
-  sessionUsage.callCount += 1;
-  const key = `${model.providerLabel || model.provider}/${model.modelName}`;
-  const entry = sessionUsage.byModel[key] || { prompt: 0, completion: 0, total: 0, count: 0 };
-  entry.prompt += p;
-  entry.completion += c;
-  entry.total += t;
-  entry.count += 1;
-  sessionUsage.byModel[key] = entry;
-}
-
-// 获取模型实际可用的 API Key：优先系统凭据，回退 JSON
-async function resolveApiKey(model: AiModelConfig): Promise<string> {
-  if (model.apiKeyRef && isTauri()) {
-    const key = await readApiKey(model.apiKeyRef);
-    if (key) return key;
-  }
-  return model.apiKey || "";
-}
-
-// 通过 Rust 代理调用 AI API（非流式）：前端只传 apiKeyRef 引用，Key 全程不离开 Rust 进程
-// 返回值与 ChatCompletionResponse 一致；失败时抛出错误，由调用方决定是否回退
-async function callAiApiViaRust(
-  model: AiModelConfig,
-  body: ChatCompletionRequest & { response_format?: { type: string } }
-): Promise<ChatCompletionResponse> {
-  const args = {
-    provider: model.provider,
-    baseUrl: model.baseUrl,
-    modelName: model.modelName,
-    apiKeyRef: model.apiKeyRef || "",
-    messages: body.messages.map((m) => ({ role: m.role, content: m.content })),
-    temperature: body.temperature,
-    maxTokens: body.maxTokens,
-    jsonMode: !!(body as { response_format?: { type: string } }).response_format,
-  };
-  const res = await invoke<{
-    content: string;
-    finishReason: string;
-    usage: { promptTokens: number; completionTokens: number; totalTokens: number };
-  }>("call_ai_api", args);
-  return {
-    content: res.content,
-    finishReason: res.finishReason,
-    usage: res.usage,
-  };
-}
-
-// 统一接口
-export interface AiGateway {
-  generateText(
-    model: AiModelConfig,
-    messages: ChatCompletionRequest["messages"],
-    options?: { temperature?: number; maxTokens?: number }
-  ): Promise<string>;
-
-  generateJson<T = unknown>(
-    model: AiModelConfig,
-    messages: ChatCompletionRequest["messages"],
-    options?: { temperature?: number; maxTokens?: number }
-  ): Promise<T>;
-
-  streamChat(
-    model: AiModelConfig,
-    messages: ChatCompletionRequest["messages"],
-    options?: {
-      temperature?: number;
-      maxTokens?: number;
-      signal?: AbortSignal;
-    }
-  ): AsyncIterable<StreamChatChunk>;
-
-  testConnection(model: AiModelConfig): Promise<{ ok: boolean; message: string }>;
-}
-
-// 默认实现：使用 OpenAI 兼容协议（绝大多数厂商均支持）
+// ====== 默认网关实现 ======
+// generateText / generateJson / testConnection 走 callOpenAICompatible（内部按 model.provider 分流）；
+// streamChat 按 provider 分流到各自的流式实现。
 export const defaultAiGateway: AiGateway = {
   async generateText(model, messages, options) {
     const res = await callOpenAICompatible(model, {
@@ -200,16 +70,9 @@ export const defaultAiGateway: AiGateway = {
     try {
       return JSON.parse(res.content) as unknown;
     } catch {
-      // 容错：尝试从文本中提取 JSON
-      const match = res.content.match(/```json\s*([\s\S]*?)```/) || res.content.match(/\{[\s\S]*\}/);
-      if (match) {
-        try {
-          return JSON.parse(match[1] || match[0]);
-        } catch (e) {
-          console.warn("[aiGateway] 从 AI 返回文本中提取 JSON 失败", e);
-        }
-      }
-      throw new Error("AI 返回内容不是合法 JSON：" + res.content.slice(0, 200));
+      // 容错：尝试从文本中提取 JSON（代码块 / 裸 JSON）
+      // 注：这里 cast 为 JSON.parse 的返回类型（any），以保持与原内联实现一致的 <T> 泛型推断
+      return extractJsonFromText(res.content) as ReturnType<typeof JSON.parse>;
     }
   },
 
@@ -245,460 +108,6 @@ export const defaultAiGateway: AiGateway = {
     yield* callOpenAICompatibleStream(model, messages, options);
   },
 };
-
-// Anthropic 适配（消息接口不同，单独处理）
-async function callAnthropic(
-  model: AiModelConfig,
-  body: ChatCompletionRequest
-): Promise<ChatCompletionResponse> {
-  // 优先走 Rust 代理
-  if (isTauri() && model.apiKeyRef) {
-    try {
-      return await callAiApiViaRust(model, body);
-    } catch (rustErr) {
-      const msg = (rustErr as Error).message || String(rustErr);
-      if (msg.includes("未配置 API Key") || msg.includes("Anthropic API 错误")) {
-        throw rustErr;
-      }
-      console.warn("[aiGateway] Rust 代理 Anthropic 失败，回退到前端 fetch：", msg);
-    }
-  }
-  // 前端 fetch 回退
-  const apiKey = await resolveApiKey(model);
-  if (!apiKey) throw new Error("未配置 API Key，请先在模型设置中添加。");
-  const systemMsg = body.messages.find((m) => m.role === "system")?.content || "";
-  const userMessages = body.messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({ role: m.role, content: m.content }));
-
-  const res = await fetch(`${model.baseUrl}/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: model.modelName,
-      system: systemMsg,
-      messages: userMessages,
-      max_tokens: body.maxTokens ?? 1024,
-      temperature: body.temperature ?? 0.6,
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Anthropic API 错误：${res.status} ${await res.text()}`);
-  }
-  const data = await res.json();
-  const content = (data.content?.[0]?.text || "") as string;
-  return {
-    content,
-    finishReason: data.stop_reason || "stop",
-    usage: {
-      promptTokens: data.usage?.input_tokens || 0,
-      completionTokens: data.usage?.output_tokens || 0,
-      totalTokens:
-        (data.usage?.input_tokens || 0) + (data.usage?.output_tokens || 0),
-    },
-  };
-}
-
-// Gemini 适配
-async function callGemini(
-  model: AiModelConfig,
-  body: ChatCompletionRequest
-): Promise<ChatCompletionResponse> {
-  // 优先走 Rust 代理
-  if (isTauri() && model.apiKeyRef) {
-    try {
-      return await callAiApiViaRust(model, body);
-    } catch (rustErr) {
-      const msg = (rustErr as Error).message || String(rustErr);
-      if (msg.includes("未配置 API Key") || msg.includes("Gemini API 错误")) {
-        throw rustErr;
-      }
-      console.warn("[aiGateway] Rust 代理 Gemini 失败，回退到前端 fetch：", msg);
-    }
-  }
-  // 前端 fetch 回退
-  const apiKey = await resolveApiKey(model);
-  if (!apiKey) throw new Error("未配置 API Key，请先在模型设置中添加。");
-  const contents = body.messages.map((m) => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }],
-  }));
-  const url = `${model.baseUrl}/models/${model.modelName}:generateContent?key=${apiKey}`;
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents,
-      generationConfig: {
-        temperature: body.temperature ?? 0.6,
-        maxOutputTokens: body.maxTokens ?? 1024,
-      },
-    }),
-  });
-  if (!res.ok) {
-    throw new Error(`Gemini API 错误：${res.status} ${await res.text()}`);
-  }
-  const data = await res.json();
-  const content = data.candidates?.[0]?.content?.parts?.[0]?.text || "";
-  return {
-    content,
-    finishReason: data.candidates?.[0]?.finishReason || "stop",
-    usage: {
-      promptTokens: data.usageMetadata?.promptTokenCount || 0,
-      completionTokens: data.usageMetadata?.candidatesTokenCount || 0,
-      totalTokens: data.usageMetadata?.totalTokenCount || 0,
-    },
-  };
-}
-
-// OpenAI 兼容协议
-async function callOpenAICompatible(
-  model: AiModelConfig,
-  body: Record<string, unknown>,
-  isTest = false
-): Promise<ChatCompletionResponse> {
-  if (model.provider === "anthropic") {
-    const res = await callAnthropic(model, body as unknown as ChatCompletionRequest);
-    if (!isTest) recordUsage(model, res.usage);
-    return res;
-  }
-  if (model.provider === "gemini") {
-    const res = await callGemini(model, body as unknown as ChatCompletionRequest);
-    if (!isTest) recordUsage(model, res.usage);
-    return res;
-  }
-  // OpenAI / DeepSeek / Qwen / GLM / Kimi / Ollama / 自定义 均兼容
-  // 优先走 Rust 代理（API Key 不离开 Rust 进程），失败回退到前端 fetch
-  if (isTauri() && model.apiKeyRef) {
-    try {
-      const res = await callAiApiViaRust(model, body as unknown as ChatCompletionRequest & { response_format?: { type: string } });
-      if (!isTest) recordUsage(model, res.usage);
-      return res;
-    } catch (rustErr) {
-      // Rust 代理失败：如果错误是"未配置 API Key"或明确的业务错误，直接抛出
-      const msg = (rustErr as Error).message || String(rustErr);
-      if (msg.includes("未配置 API Key") || msg.includes("API 错误")) {
-        throw rustErr;
-      }
-      // 其它错误（如 invoke 失败、网络异常）回退到前端 fetch
-      console.warn("[aiGateway] Rust 代理失败，回退到前端 fetch：", msg);
-    }
-  }
-  // 前端 fetch 回退路径
-  const apiKey = await resolveApiKey(model);
-  if (!apiKey) throw new Error("未配置 API Key，请先在模型设置中添加。");
-  const res = await fetch(`${model.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify(body),
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`AI API 错误：${res.status} ${txt.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  const content = data.choices?.[0]?.message?.content || "";
-  const result: ChatCompletionResponse = {
-    content,
-    finishReason: data.choices?.[0]?.finish_reason || "stop",
-    usage: {
-      promptTokens: data.usage?.prompt_tokens || 0,
-      completionTokens: data.usage?.completion_tokens || 0,
-      totalTokens: data.usage?.total_tokens || 0,
-    },
-  };
-  if (!isTest) recordUsage(model, result.usage);
-  return result;
-}
-
-// ====== 流式响应实现 ======
-// 通用 SSE 行解析：从 ReadableStream 中按行读取，遇到 `data: ` 前缀的行收集 payload，
-// 空行视为帧边界。yield 每个 data payload 字符串。
-async function* readSseDataLines(
-  body: ReadableStream<Uint8Array>,
-  signal?: AbortSignal
-): AsyncGenerator<string> {
-  const reader = body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-  try {
-    while (true) {
-      if (signal?.aborted) {
-        try { await reader.cancel(); } catch { /* ignore */ }
-        return;
-      }
-      const { done, value } = await reader.read();
-      if (done) return;
-      buffer += decoder.decode(value, { stream: true });
-      // 按 \n 切分，逐行处理
-      let idx: number;
-      while ((idx = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, idx).replace(/\r$/, "");
-        buffer = buffer.slice(idx + 1);
-        const trimmed = line.trim();
-        if (trimmed.startsWith("data:")) {
-          yield trimmed.slice(5).trim();
-        }
-        // 跳过 event: 行、注释行、空行
-      }
-    }
-  } finally {
-    try { reader.releaseLock(); } catch { /* ignore */ }
-  }
-}
-
-// OpenAI 兼容厂商流式（含 OpenAI / DeepSeek / Qwen / GLM / Kimi / Ollama / 自定义）
-async function* callOpenAICompatibleStream(
-  model: AiModelConfig,
-  messages: ChatCompletionRequest["messages"],
-  options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal }
-): AsyncGenerator<StreamChatChunk> {
-  const apiKey = await resolveApiKey(model);
-  if (!apiKey) throw new Error("未配置 API Key，请先在模型设置中添加。");
-
-  const res = await fetch(`${model.baseUrl}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${apiKey}`,
-    },
-    body: JSON.stringify({
-      model: model.modelName,
-      messages,
-      temperature: options?.temperature ?? 0.6,
-      max_tokens: options?.maxTokens,
-      stream: true,
-      stream_options: { include_usage: true },
-    }),
-    signal: options?.signal,
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`AI API 错误：${res.status} ${txt.slice(0, 200)}`);
-  }
-  if (!res.body) return;
-
-  let lastUsage: StreamChatChunk["usage"] | undefined;
-  let lastFinishReason: string | undefined;
-
-  for await (const payload of readSseDataLines(res.body, options?.signal)) {
-    if (payload === "[DONE]") {
-      break;
-    }
-    if (!payload) continue;
-    let data: OpenAIStreamFrame;
-    try {
-      data = JSON.parse(payload) as OpenAIStreamFrame;
-    } catch (e) {
-      console.warn("[aiGateway] OpenAI 流式帧解析失败，已跳过", e);
-      continue; // 跳过无法解析的帧
-    }
-    const delta: string = data.choices?.[0]?.delta?.content || "";
-    const finishReason: string | undefined = data.choices?.[0]?.finish_reason || undefined;
-    if (finishReason) lastFinishReason = finishReason;
-    if (data.usage) {
-      lastUsage = {
-        promptTokens: data.usage.prompt_tokens || 0,
-        completionTokens: data.usage.completion_tokens || 0,
-        totalTokens: data.usage.total_tokens || 0,
-      };
-    }
-    if (delta) {
-      yield { delta };
-    }
-  }
-
-  // 录入会话用量并发送最终 chunk
-  if (lastUsage) {
-    recordUsage(model, lastUsage);
-  } else {
-    // 厂商未返回 usage 时仅记录一次调用次数
-    recordUsage(model, { promptTokens: 0, completionTokens: 0, totalTokens: 0 });
-  }
-  yield { delta: "", finishReason: lastFinishReason, usage: lastUsage };
-}
-
-// Anthropic 流式
-async function* callAnthropicStream(
-  model: AiModelConfig,
-  messages: ChatCompletionRequest["messages"],
-  options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal }
-): AsyncGenerator<StreamChatChunk> {
-  const apiKey = await resolveApiKey(model);
-  if (!apiKey) throw new Error("未配置 API Key，请先在模型设置中添加。");
-
-  const systemMsg = messages.find((m) => m.role === "system")?.content || "";
-  const userMessages = messages
-    .filter((m) => m.role !== "system")
-    .map((m) => ({ role: m.role, content: m.content }));
-
-  const res = await fetch(`${model.baseUrl}/messages`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-    },
-    body: JSON.stringify({
-      model: model.modelName,
-      system: systemMsg,
-      messages: userMessages,
-      max_tokens: options?.maxTokens ?? 1024,
-      temperature: options?.temperature ?? 0.6,
-      stream: true,
-    }),
-    signal: options?.signal,
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Anthropic API 错误：${res.status} ${txt.slice(0, 200)}`);
-  }
-  if (!res.body) return;
-
-  let promptTokens = 0;
-  let completionTokens = 0;
-  let lastFinishReason: string | undefined;
-  let sawMessageStop = false;
-
-  // Anthropic SSE 同时有 event: 和 data: 行，需要追踪当前 event 类型
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder("utf-8");
-  let buffer = "";
-  let currentEvent = "";
-
-  try {
-    while (!sawMessageStop) {
-      if (options?.signal?.aborted) {
-        try { await reader.cancel(); } catch { /* ignore */ }
-        return;
-      }
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      let idx: number;
-      while ((idx = buffer.indexOf("\n")) >= 0) {
-        const line = buffer.slice(0, idx).replace(/\r$/, "");
-        buffer = buffer.slice(idx + 1);
-        if (line.startsWith("event:")) {
-          currentEvent = line.slice(6).trim();
-        } else if (line.startsWith("data:")) {
-          const payload = line.slice(5).trim();
-          if (!payload) continue;
-          let data: AnthropicStreamFrame;
-          try {
-            data = JSON.parse(payload) as AnthropicStreamFrame;
-          } catch (e) {
-            console.warn("[aiGateway] Anthropic 流式帧解析失败，已跳过", e);
-            continue;
-          }
-          if (currentEvent === "message_start") {
-            promptTokens = data.message?.usage?.input_tokens || 0;
-          } else if (currentEvent === "content_block_delta") {
-            const text: string = data.delta?.text || "";
-            if (text) {
-              yield { delta: text };
-            }
-          } else if (currentEvent === "message_delta") {
-            completionTokens = data.usage?.output_tokens ?? completionTokens;
-            if (data.delta?.stop_reason) {
-              lastFinishReason = data.delta.stop_reason;
-            }
-          } else if (currentEvent === "message_stop") {
-            sawMessageStop = true;
-            break;
-          }
-        }
-      }
-    }
-  } finally {
-    try { reader.releaseLock(); } catch { /* ignore */ }
-  }
-
-  const usage: StreamChatChunk["usage"] = {
-    promptTokens,
-    completionTokens,
-    totalTokens: promptTokens + completionTokens,
-  };
-  recordUsage(model, usage);
-  yield { delta: "", finishReason: lastFinishReason, usage };
-}
-
-// Gemini 流式
-async function* callGeminiStream(
-  model: AiModelConfig,
-  messages: ChatCompletionRequest["messages"],
-  options?: { temperature?: number; maxTokens?: number; signal?: AbortSignal }
-): AsyncGenerator<StreamChatChunk> {
-  const apiKey = await resolveApiKey(model);
-  if (!apiKey) throw new Error("未配置 API Key，请先在模型设置中添加。");
-
-  const contents = messages.map((m) => ({
-    role: m.role === "assistant" ? "model" : "user",
-    parts: [{ text: m.content }],
-  }));
-  const url = `${model.baseUrl}/models/${model.modelName}:streamGenerateContent?alt=sse&key=${apiKey}`;
-
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents,
-      generationConfig: {
-        temperature: options?.temperature ?? 0.6,
-        maxOutputTokens: options?.maxTokens ?? 1024,
-      },
-    }),
-    signal: options?.signal,
-  });
-  if (!res.ok) {
-    const txt = await res.text();
-    throw new Error(`Gemini API 错误：${res.status} ${txt.slice(0, 200)}`);
-  }
-  if (!res.body) return;
-
-  let lastUsage: StreamChatChunk["usage"] | undefined;
-  let lastFinishReason: string | undefined;
-
-  for await (const payload of readSseDataLines(res.body, options?.signal)) {
-    if (!payload) continue;
-    let data: GeminiStreamFrame;
-    try {
-      data = JSON.parse(payload) as GeminiStreamFrame;
-    } catch (e) {
-      console.warn("[aiGateway] Gemini 流式帧解析失败，已跳过", e);
-      continue;
-    }
-    const parts = data.candidates?.[0]?.content?.parts;
-    const text: string = Array.isArray(parts) ? (parts.map((p) => p.text || "").join("")) : "";
-    if (data.candidates?.[0]?.finishReason) {
-      lastFinishReason = data.candidates[0].finishReason;
-    }
-    if (data.usageMetadata) {
-      lastUsage = {
-        promptTokens: data.usageMetadata.promptTokenCount || 0,
-        completionTokens: data.usageMetadata.candidatesTokenCount || 0,
-        totalTokens: data.usageMetadata.totalTokenCount || 0,
-      };
-    }
-    if (text) {
-      yield { delta: text };
-    }
-  }
-
-  if (lastUsage) {
-    recordUsage(model, lastUsage);
-  } else {
-    recordUsage(model, { promptTokens: 0, completionTokens: 0, totalTokens: 0 });
-  }
-  yield { delta: "", finishReason: lastFinishReason, usage: lastUsage };
-}
 
 // ====== 业务专用：自然语言解析为结构化草稿 ======
 
@@ -783,6 +192,9 @@ export interface AgentAnalysisInput {
   accountSummary: string;
   positions: string;
   marketData: string;
+  klineSummary?: string; // 技术面：近 60 日 K 线 + MA5/MA10/MA20
+  fundamentalsSummary?: string; // 估值面：PE/PB/市值/换手率
+  announcementsSummary?: string; // 公告面：持仓股近期公告标题列表
   userPreferences: string;
   recentAgentMemories: string;
 }
@@ -797,9 +209,10 @@ export interface AgentAnalysisOutput {
   confidence: number; // 0-1
   needUserConfirm: boolean;
   rawMarkdown: string;
+  dimensions?: AnalysisDimensions; // 5 维度评分（可选，旧结果可能缺失）
 }
 
-const AGENT_SYSTEM_PROMPT = `你是一个股票投资辅助 Agent，不是持牌投顾，不能承诺收益，不能替用户下单。
+export const AGENT_SYSTEM_PROMPT = `你是一个股票投资辅助 Agent，不是持牌投顾，不能承诺收益，不能替用户下单。
 你的任务是帮助用户记录账户、分析持仓、识别风险、总结行情变化，并给出谨慎的辅助观点。
 
 你必须遵守：
@@ -809,13 +222,75 @@ const AGENT_SYSTEM_PROMPT = `你是一个股票投资辅助 Agent，不是持牌
 4. 如果数据不足，必须明确说明数据不足。
 5. 输出要简洁、可执行、带风险提示。
 6. 当发现明确板块机会且用户尚未持有时，可在 suggestionType 输出 "buy_position" 并在 opportunities 中说明标的与原因，但 rawMarkdown 仍需提示"需用户自行决策，本建议不构成投资建议"。
+7. 若提供技术面数据（MA5/MA10/MA20），需结合均线位置判断短期趋势：多头排列（MA5>MA10>MA20）视为偏多，空头排列（MA5<MA10<MA20）视为偏空，纠缠视为震荡。
+8. 若提供估值面数据（PE/PB/市值），需结合行业常见区间判断估值高低，避免脱离行业基准下结论。
+9. 输出 dimensions 字段，包含 5 个维度评分（technical/fundamental/capital/sentiment/risk，每个 1-10 分 + 1-2 句 rationale）。技术面基于 MA 均线趋势，基本面基于 PE/PB 估值，资金面基于换手率与量价，情绪面基于涨跌幅与热度，风险面基于回撤与集中度。
 
 请同时输出严格 JSON 字段，rawMarkdown 字段为给用户展示的完整中文 Markdown。`;
 
+// ====== Task 3：调研流水线策略 Prompt ======
+// 保留原 AGENT_SYSTEM_PROMPT 以向后兼容；新策略走 STRATEGY_PROMPTS。
+// BASE_RULES 为各策略共享的通用规则（含规则 1-9，与 AGENT_SYSTEM_PROMPT 等价但不含末尾的输出说明段）。
+const BASE_RULES = `你是一个股票投资辅助 Agent，不是持牌投顾，不能承诺收益，不能替用户下单。
+你的任务是帮助用户记录账户、分析持仓、识别风险、总结行情变化，并给出谨慎的辅助观点。
+
+你必须遵守：
+1. 所有观点都要说明依据。
+2. 不得使用"必涨""稳赚""马上买入"等绝对化表达。
+3. 涉及买卖时，必须提醒用户自行决策。
+4. 如果数据不足，必须明确说明数据不足。
+5. 输出要简洁、可执行、带风险提示。
+6. 当发现明确板块机会且用户尚未持有时，可在 suggestionType 输出 "buy_position" 并在 opportunities 中说明标的与原因，但 rawMarkdown 仍需提示"需用户自行决策，本建议不构成投资建议"。
+7. 若提供技术面数据（MA5/MA10/MA20），需结合均线位置判断短期趋势：多头排列（MA5>MA10>MA20）视为偏多，空头排列（MA5<MA10<MA20）视为偏空，纠缠视为震荡。
+8. 若提供估值面数据（PE/PB/市值），需结合行业常见区间判断估值高低，避免脱离行业基准下结论。
+9. 输出 dimensions 字段，包含 5 个维度评分（technical/fundamental/capital/sentiment/risk，每个 1-10 分 + 1-2 句 rationale）。`;
+
+export const STRATEGY_PROMPTS: Record<AnalysisStrategy, string> = {
+  quick_valuation: `${BASE_RULES}
+
+## 当前策略：快速估值
+聚焦于估值锚点：当前价格 → PE(TTM)/PB → 与行业均值对比 → 是否高估/低估。
+技术面只看 MA20 趋势方向，不做深入分析。
+rawMarkdown 应简洁（200 字以内），重点给出"估值偏高/合理/偏低"结论。`,
+
+  standard_patrol: `${BASE_RULES}
+
+## 当前策略：标准巡检
+全面覆盖技术面（MA 均线趋势）+ 基本面（PE/PB 估值）+ 风险面（回撤/集中度）。
+这是默认策略，保持原有分析深度。
+若有近期公告数据，在 rawMarkdown 中包含"近期公告 AI 摘要"段落（3-5 条要点压缩）。`,
+
+  deep_research: `${BASE_RULES}
+
+## 当前策略：深度调研
+深度覆盖：机构覆盖数 → 估值分位 → 概念题材 → 资金面（换手率/量价）→ 龙虎榜 → 解禁到期 → 两融余额变化。
+rawMarkdown 应详细（500 字以上），包含多维度交叉验证。
+若数据不足（如龙虎榜/解禁/两融数据未提供），明确说明"该维度数据暂不可用"，不要臆测。
+若有近期公告数据，在 rawMarkdown 中包含"近期公告 AI 摘要"段落（3-5 条要点压缩），并结合公告内容评估对持仓的潜在影响。`,
+
+  peer_compare: `${BASE_RULES}
+
+## 当前策略：同类对比
+将用户持仓与同行业典型公司横向对比（估值 PE/PB、市值、成长性）。
+rawMarkdown 应以表格形式呈现对比结果，并标注用户持仓在行业中的相对位置。
+若未提供同行业数据，基于持仓股的行业常识给出对比框架。`,
+};
+
 export async function runAgentAnalysis(
   model: AiModelConfig,
-  input: AgentAnalysisInput
+  input: AgentAnalysisInput,
+  strategy: AnalysisStrategy = "standard_patrol"
 ): Promise<AgentAnalysisOutput> {
+  const klineSection = input.klineSummary
+    ? `\n技术面数据（近 60 日 K 线摘要）：\n${input.klineSummary}\n`
+    : "";
+  const fundamentalsSection = input.fundamentalsSummary
+    ? `\n估值面数据（PE/PB/市值/换手率）：\n${input.fundamentalsSummary}\n`
+    : "";
+  const announcementsSection = input.announcementsSummary
+    ? `\n近期公告：\n${input.announcementsSummary}\n`
+    : "";
+
   const userContent = `请基于以下信息分析用户当前持仓：
 
 账户信息：
@@ -826,19 +301,20 @@ ${input.positions}
 
 行情数据：
 ${input.marketData}
-
+${klineSection}${fundamentalsSection}${announcementsSection}
 用户投资偏好：
 ${input.userPreferences}
 
 历史 Agent 观点：
 ${input.recentAgentMemories}
 
-请输出 JSON，包含字段：marketOverview, positionChanges, risks(数组), opportunities(数组), suggestionType(枚举), suggestion, confidence(0-1), needUserConfirm(boolean), rawMarkdown(给用户看的完整中文 Markdown 报告)。
+请输出 JSON，包含字段：marketOverview, positionChanges, risks(数组), opportunities(数组), suggestionType(枚举), suggestion, confidence(0-1), needUserConfirm(boolean), rawMarkdown(给用户看的完整中文 Markdown 报告), dimensions(5 维度评分对象，含 technical/fundamental/capital/sentiment/risk，每个维度为 {score:1-10, rationale:"1-2句依据"})。
 注意：不得给出确定性收益承诺，不得替用户做最终买卖决定。
 若发现明显板块机会且用户尚未持有，可输出 suggestionType="buy_position"，并在 opportunities 中说明标的与原因。`;
 
+  const systemPrompt = STRATEGY_PROMPTS[strategy] || STRATEGY_PROMPTS.standard_patrol;
   const result = await defaultAiGateway.generateJson<AgentAnalysisOutput>(model, [
-    { role: "system", content: AGENT_SYSTEM_PROMPT },
+    { role: "system", content: systemPrompt },
     { role: "user", content: userContent },
   ]);
 
@@ -854,5 +330,72 @@ ${input.recentAgentMemories}
     rawMarkdown:
       result.rawMarkdown ||
       `${result.marketOverview || ""}\n\n${result.suggestion || ""}`,
+    // dimensions 可选：AI 未返回时保留 undefined，不伪造
+    dimensions: result.dimensions,
+  };
+}
+
+// ====== 业务专用：多模型辩论（Task 2） ======
+// 让用户可选 2-3 个模型独立分析同一持仓，汇总共识/分歧。
+// 辩论模式下不额外调 AI 提取共识点（简化版），仅基于各模型 suggestionType 归并一致性。
+
+export async function runAgentAnalysisDebate(
+  models: AiModelConfig[],
+  input: AgentAnalysisInput,
+  strategy: AnalysisStrategy = "standard_patrol"
+): Promise<DebateResult> {
+  // 并发调用各模型独立分析（使用统一的分析策略）
+  const results = await Promise.all(
+    models.map(async (m) => {
+      const output = await runAgentAnalysis(m, input, strategy);
+      return {
+        modelId: m.id,
+        modelName: m.displayName ?? m.modelName,
+        suggestionType: output.suggestionType,
+        confidence: output.confidence,
+        dimensions: output.dimensions,
+        summary: output.suggestion,
+      } as DebateModelConclusion;
+    })
+  );
+
+  // 汇总一致性
+  const bullTypes: SuggestionType[] = ["buy_position"];
+  const bearTypes: SuggestionType[] = ["reduce_position", "stop_loss_warn"];
+  const bullCount = results.filter((r) => bullTypes.includes(r.suggestionType)).length;
+  const bearCount = results.filter((r) => bearTypes.includes(r.suggestionType)).length;
+  const total = results.length;
+  let consensus: DebateConsensus;
+  if (bullCount === total) consensus = "all_bull";
+  else if (bearCount === total) consensus = "all_bear";
+  else if (bullCount > bearCount && bullCount > total / 2) consensus = "majority_bull";
+  else if (bearCount > bullCount && bearCount > total / 2) consensus = "majority_bear";
+  else consensus = "divided";
+
+  // 构造综合报告 rawMarkdown
+  const modelLines = results
+    .map(
+      (r) =>
+        `### ${r.modelName}\n- 建议：${SUGGESTION_TYPE_TO_DECISION[r.suggestionType].label}（置信度 ${(r.confidence * 100).toFixed(0)}%）\n- ${r.summary}`
+    )
+    .join("\n\n");
+
+  const rawMarkdown = `## 多模型辩论报告
+
+**一致性：${DEBATE_CONSENSUS_LABEL[consensus]}**
+
+${modelLines}
+
+---
+*本辩论报告由 ${total} 个模型独立分析后汇总，不构成投资建议，需用户自行决策。*`;
+
+  return {
+    models: results,
+    consensus,
+    consensusPoints: [], // 简化版：不额外调 AI 提取共识点，留空
+    dissentPoints: [],
+    overallSuggestion: `经 ${total} 个模型辩论，${DEBATE_CONSENSUS_LABEL[consensus]}。请参考各模型独立结论自行判断。`,
+    modelDistribution: Object.fromEntries(results.map((r) => [r.modelId, r.confidence])),
+    rawMarkdown,
   };
 }

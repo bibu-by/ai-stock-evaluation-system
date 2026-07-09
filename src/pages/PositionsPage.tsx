@@ -5,16 +5,17 @@ import { PositionCard } from "@/components/dashboard/PositionCard";
 import { EmptyState } from "@/components/common/EmptyState";
 import { RefreshButton } from "@/components/common/RefreshButton";
 import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select } from "@/components/ui/select";
 import { Dialog, DialogHeader, DialogTitle, DialogContent, DialogFooter } from "@/components/ui/dialog";
-import { BriefcaseBusiness, Plus } from "lucide-react";
+import { BriefcaseBusiness, Plus, DatabaseZap } from "lucide-react";
 import { matchSymbolByName, searchSymbol, inferMarketByCode } from "@/services/marketData";
 import type { Market } from "@/domain/position";
 
 export function PositionsPage() {
-  const { positions, addPosition, removePosition, sellPosition, refreshPrices } = useAppStore();
+  const { positions, addPosition, removePosition, sellPosition, refreshPrices, lastQuoteRefresh } = useAppStore();
   const [dialogOpen, setDialogOpen] = useState(false);
   const [form, setForm] = useState({
     name: "",
@@ -163,6 +164,28 @@ export function PositionsPage() {
         </div>
       </div>
 
+      {/* 行情数据源标签：体现新浪主 + 腾讯补 + fallback 机制 */}
+      {lastQuoteRefresh && (
+        <div className="flex flex-wrap items-center gap-2 text-[11px] text-muted-foreground">
+          <DatabaseZap className="h-3.5 w-3.5" />
+          <span>行情来源：</span>
+          {lastQuoteRefresh.sina > 0 && (
+            <Badge variant="outline" className="text-[10px]">新浪 {lastQuoteRefresh.sina}</Badge>
+          )}
+          {lastQuoteRefresh.sinaTencent > 0 && (
+            <Badge variant="outline" className="text-[10px] border-cyan-500/40 text-cyan-400">
+              新浪+腾讯 {lastQuoteRefresh.sinaTencent}
+            </Badge>
+          )}
+          {lastQuoteRefresh.tencent > 0 && (
+            <Badge variant="outline" className="text-[10px] border-amber-500/40 text-amber-400">
+              腾讯兜底 {lastQuoteRefresh.tencent}
+            </Badge>
+          )}
+          <span>· 共 {lastQuoteRefresh.total} 只 · {new Date(lastQuoteRefresh.time).toLocaleTimeString("zh-CN", { hour12: false })}</span>
+        </div>
+      )}
+
       {positions.length === 0 ? (
         <EmptyState
           icon={<BriefcaseBusiness className="h-12 w-12" />}
@@ -170,7 +193,7 @@ export function PositionsPage() {
           description="点击右上角手动添加，或在聊天框告诉 AI。"
         />
       ) : (
-        <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+        <div className="grid grid-cols-1 gap-3">
           {positions.map((p) => (
             <div key={p.id} className="space-y-2">
               <PositionCard position={p} />

@@ -1,16 +1,21 @@
-// 全局应用状态 - Zustand
-// 集中管理账户、持仓、交易、聊天、Agent、记忆、模型、配置等。
-// 同时负责初始化时从 localStore 加载，以及提供持久化方法。
+// 全局应用状态 - Zustand（按域 Slice 组合层）
+// 原先集中管理的巨型 store 已拆分为按域 slice：
+//   - slices/configSlice.ts        配置 / 主题
+//   - slices/positionsSlice.ts     持仓
+//   - slices/conversationsSlice.ts 会话
+//   - slices/agentsSlice.ts        Agent 任务 / 运行记录
+//   - slices/alertsSlice.ts        风险提醒
+//   - slices/modelsSlice.ts        AI 模型
+// 本文件保留较小或与账户资金流耦合度高的核心域（account / trades / messages /
+// memories / dataSources / accountSnapshots / UI），并通过 initApp 统筹各 slice 的初始化。
+// 公共 API（useAppStore 及所有 state 字段、action 签名）与拆分前完全一致。
 
 import { create } from "zustand";
-import type { Account, AccountSummary, AccountSnapshot } from "@/domain/account";
-import type { Position, Market } from "@/domain/position";
+import type { Account } from "@/domain/account";
 import type { Trade } from "@/domain/trade";
-import type { AgentJob, AgentRun, AlertRule } from "@/domain/agent";
 import type { Memory } from "@/domain/memory";
 import type { ChatMessage, Conversation } from "@/domain/chat";
-import type { AiModelConfig } from "@/domain/ai";
-import type { AppConfig, MarketDataSource } from "@/domain/config";
+import type { AppConfig } from "@/domain/config";
 import {
   loadAccount, saveAccount,
   loadPositions, savePositions,
@@ -25,7 +30,6 @@ import {
   loadConfig, saveConfig,
   loadDataSources, saveDataSources,
   loadAccountSnapshots, saveAccountSnapshots,
-  deleteApiKey,
 } from "@/services/localStore";
 import {
   mockAccount, mockPositions, mockTrades, mockMessages,
@@ -33,157 +37,40 @@ import {
   mockModels, mockDataSources, mockAccountSnapshots,
 } from "@/mock/mockData";
 import { uid, nowIso, cloneJson } from "@/lib/utils";
-import { getBatchQuotes, setMarketMode } from "@/services/marketData";
-import { runAgentJob, calculateNextRunAt } from "@/services/agentRunner";
-import { notifyAlertTriggered } from "@/services/notification";
+import { setMarketMode } from "@/services/marketData";
 import { defaultConfig } from "@/domain/config";
 import { ACCOUNT_SNAPSHOT_RETAIN_DAYS } from "@/domain/constants";
 
-export type PageKey =
-  | "dashboard"
-  | "positions"
-  | "trades"
-  | "agent"
-  | "decision"
-  | "memory"
-  | "model"
-  | "data-source"
-  | "settings";
+import type { AppState } from "./types";
+import { createConfigSlice } from "./slices/configSlice";
+import { createPositionsSlice } from "./slices/positionsSlice";
+import { createConversationsSlice } from "./slices/conversationsSlice";
+import { createAgentsSlice } from "./slices/agentsSlice";
+import { createAlertsSlice } from "./slices/alertsSlice";
+import { createModelsSlice } from "./slices/modelsSlice";
 
-export type ChatMode = "open" | "collapsed" | "hidden";
+// 公共类型再导出，保持与拆分前完全一致的对外 API
+export type { AppState, PageKey, ChatMode } from "./types";
 
-interface AppState {
-  // 初始化
-  initialized: boolean;
-  initApp: () => Promise<void>;
+export const useAppStore = create<AppState>()((set, get, store) => ({
+  // ====== 组合各域 slice ======
+  ...createConfigSlice(set, get, store),
+  ...createPositionsSlice(set, get, store),
+  ...createConversationsSlice(set, get, store),
+  ...createAgentsSlice(set, get, store),
+  ...createAlertsSlice(set, get, store),
+  ...createModelsSlice(set, get, store),
 
-  // 配置
-  config: AppConfig | null;
-  setConfig: (patch: Partial<AppConfig>) => Promise<void>;
-
-  // 首次启动引导
-  completeOnboarding: (initialCapital: number) => Promise<void>;
-  importDemoData: () => Promise<void>;
-
-  // 账户
-  account: Account | null;
-  setAccount: (patch: Partial<Account>) => Promise<void>;
-  setInitialCapital: (capital: number) => Promise<void>;
-  setCashBalance: (cash: number) => Promise<void>;
-  deposit: (amount: number) => Promise<void>;
-  withdraw: (amount: number) => Promise<void>;
-
-  // 账户快照（用于收益折线图）
-  accountSnapshots: AccountSnapshot[];
-  recordSnapshot: () => Promise<void>;
-  // 重置所有资产：清空账户本金/现金、持仓、交易记录、收益快照（保留聊天/Agent/记忆/模型/配置）
-  resetAssets: () => Promise<void>;
-
-  // 持仓
-  positions: Position[];
-  addPosition: (pos: {
-    symbol: string;
-    name: string;
-    market: Market;
-    quantity: number;
-    avgCost?: number;     // 方式 A：买入单价
-    totalCost?: number;   // 方式 B：总花费
-    currentPrice?: number;
-    aiStatusText?: string;
-    note?: string;
-    externalFunding?: boolean; // 从外部资金买入（如银行卡转入）：跳过现金校验，自动累加本金
-  }) => Promise<void>;
-  updatePosition: (id: string, patch: Partial<Position>) => Promise<void>;
-  removePosition: (id: string) => Promise<void>;
-  sellPosition: (id: string, sellPrice?: number) => Promise<void>;
-  refreshPrices: () => Promise<void>;
-
-  // 交易
-  trades: Trade[];
-  addTrade: (trade: Omit<Trade, "id" | "createdAt">) => Promise<void>;
-
-  // 聊天
-  messages: ChatMessage[];
-  addMessage: (msg: Omit<ChatMessage, "id" | "createdAt"> & { id?: string; createdAt?: string }) => Promise<string>;
-  updateMessage: (id: string, patch: Partial<ChatMessage>) => Promise<void>;
-  removeMessage: (id: string) => Promise<void>;
-  removeMessagesAfter: (id: string) => Promise<void>;
-
-  // 会话
-  conversations: Conversation[];
-  activeConversationId: string | null;
-  createConversation: () => Promise<void>;
-  switchConversation: (id: string) => Promise<void>;
-  renameConversation: (id: string, title: string) => Promise<void>;
-  deleteConversation: (id: string) => Promise<void>;
-
-  // Agent
-  agentJobs: AgentJob[];
-  agentRuns: AgentRun[];
-  addAgentJob: (job: Omit<AgentJob, "id" | "createdAt" | "updatedAt">) => Promise<void>;
-  updateAgentJob: (id: string, patch: Partial<AgentJob>) => Promise<void>;
-  removeAgentJob: (id: string) => Promise<void>;
-  runJobNow: (jobId: string) => Promise<void>;
-  addAgentRun: (run: AgentRun) => Promise<void>;
-  updateAgentRun: (run: AgentRun) => Promise<void>;
-
-  // 提醒
-  alerts: AlertRule[];
-  addAlert: (alert: Omit<AlertRule, "id" | "createdAt" | "updatedAt" | "triggerCount">) => Promise<void>;
-  updateAlert: (id: string, patch: Partial<AlertRule>) => Promise<void>;
-  removeAlert: (id: string) => Promise<void>;
-  checkAlerts: () => Promise<void>;
-
-  // 记忆
-  memories: Memory[];
-  addMemory: (mem: Omit<Memory, "id" | "createdAt" | "updatedAt">) => Promise<void>;
-  updateMemory: (id: string, patch: Partial<Memory>) => Promise<void>;
-  removeMemory: (id: string) => Promise<void>;
-
-  // 模型
-  models: AiModelConfig[];
-  addModel: (m: Omit<AiModelConfig, "id" | "createdAt" | "updatedAt">) => Promise<void>;
-  updateModel: (id: string, patch: Partial<AiModelConfig>) => Promise<void>;
-  removeModel: (id: string) => Promise<void>;
-  defaultModel: () => AiModelConfig | null;
-
-  // 数据源
-  dataSources: MarketDataSource[];
-  addDataSource: (s: Omit<MarketDataSource, "id">) => Promise<void>;
-  updateDataSource: (id: string, patch: Partial<MarketDataSource>) => Promise<void>;
-  removeDataSource: (id: string) => Promise<void>;
-
-  // UI 状态
-  currentPage: PageKey;
-  setCurrentPage: (p: PageKey) => void;
-  chatMode: ChatMode;
-  setChatMode: (m: ChatMode) => void;
-  theme: "light" | "dark";
-  toggleTheme: () => Promise<void>;
-
-  // 派生：账户汇总
-  getAccountSummary: () => AccountSummary;
-}
-
-export const useAppStore = create<AppState>((set, get) => ({
+  // ====== 核心域（未拆分，保留在本文件） ======
   initialized: false,
 
   // 初始值（在 initApp 中会被本地存储数据覆盖）
-  config: null,
   account: null,
-  positions: [],
   trades: [],
   messages: [],
-  conversations: [],
-  activeConversationId: null,
-  agentJobs: [],
-  agentRuns: [],
-  alerts: [],
   memories: [],
-  models: [],
   dataSources: [],
   accountSnapshots: [],
-  theme: "dark",
 
   async initApp() {
     if (get().initialized) return;
@@ -353,28 +240,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  // ====== 配置 ======
-  async setConfig(patch) {
-    const old = get().config;
-    if (!old) return;
-    const next = { ...old, ...patch };
-    await saveConfig(next);
-    set({ config: next });
-    if (patch.theme) {
-      const theme = patch.theme === "light" ? "light" : "dark";
-      if (typeof document !== "undefined") {
-        document.documentElement.classList.toggle("dark", theme === "dark");
-      }
-      set({ theme });
-    }
-  },
-
-  async toggleTheme() {
-    const cur = get().theme;
-    const next = cur === "dark" ? "light" : "dark";
-    await get().setConfig({ theme: next });
-  },
-
   // ====== 账户 ======
   async setAccount(patch) {
     const old = get().account;
@@ -511,213 +376,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     });
   },
 
-  // ====== 持仓 ======
-  async addPosition(pos) {
-    // 根据 avgCost 或 totalCost 统一算出 avgCost 和总成本
-    let avgCost: number;
-    let totalCost: number;
-    if (pos.avgCost !== undefined) {
-      avgCost = pos.avgCost;
-      totalCost = avgCost * pos.quantity;
-    } else if (pos.totalCost !== undefined) {
-      totalCost = pos.totalCost;
-      avgCost = totalCost / pos.quantity;
-    } else {
-      throw new Error("必须提供 avgCost 或 totalCost");
-    }
-
-    const account = get().account;
-    if (!account) throw new Error("账户未初始化");
-
-    // externalFunding：从外部资金买入（如银行卡转入），跳过现金校验，自动累加本金
-    // 现金净效果不变（先入金 totalCost 再扣减 totalCost）
-    const externalFunding = !!pos.externalFunding;
-    if (!externalFunding && account.cashBalance < totalCost) {
-      throw new Error("现金不足，请先入金");
-    }
-
-    const currentPrice = pos.currentPrice ?? avgCost;
-    const marketValue = currentPrice * pos.quantity;
-    const unrealizedPnl = (currentPrice - avgCost) * pos.quantity;
-    const unrealizedPnlRate =
-      avgCost > 0 ? ((currentPrice - avgCost) / avgCost) * 100 : 0;
-
-    const newPos: Position = {
-      id: uid("pos"),
-      symbol: pos.symbol,
-      name: pos.name,
-      market: pos.market,
-      quantity: pos.quantity,
-      avgCost,
-      currentPrice,
-      marketValue,
-      unrealizedPnl,
-      unrealizedPnlRate,
-      aiStatusText: pos.aiStatusText,
-      note: pos.note,
-      externalFunding,
-      updatedAt: nowIso(),
-    };
-
-    // 写入持仓
-    const list = get().positions.slice();
-    list.push(newPos);
-    await savePositions(list);
-    set({ positions: list });
-
-    // 扣减现金：externalFunding 时同时累加本金（相当于先入金再买入）
-    const principalDelta = externalFunding ? totalCost : 0;
-    const updatedAccount: Account = {
-      ...account,
-      cumulativePrincipal: account.cumulativePrincipal + principalDelta,
-      cashBalance: account.cashBalance + principalDelta - totalCost,
-      updatedAt: nowIso(),
-    };
-    await saveAccount(updatedAccount);
-    set({ account: updatedAccount });
-
-    // 写入 BUY 交易记录
-    await get().addTrade({
-      symbol: pos.symbol,
-      name: pos.name,
-      type: "BUY",
-      quantity: pos.quantity,
-      price: avgCost,
-      fee: 0,
-      amount: totalCost,
-      tradedAt: nowIso(),
-      source: "manual",
-      note: externalFunding
-        ? `AI 录入·自动入金 ¥${totalCost.toLocaleString("zh-CN")}${pos.note ? "｜" + pos.note : ""}`
-        : pos.note,
-    });
-
-    // 刷新收益曲线最新点
-    await get().recordSnapshot();
-  },
-
-  async updatePosition(id, patch) {
-    const list = get().positions.map((p) => {
-      if (p.id !== id) return p;
-      const next = { ...p, ...patch, updatedAt: nowIso() };
-      // 重新计算
-      next.marketValue = next.currentPrice * next.quantity;
-      next.unrealizedPnl = (next.currentPrice - next.avgCost) * next.quantity;
-      next.unrealizedPnlRate =
-        next.avgCost > 0
-          ? ((next.currentPrice - next.avgCost) / next.avgCost) * 100
-          : 0;
-      return next;
-    });
-    await savePositions(list);
-    set({ positions: list });
-  },
-
-  async removePosition(id) {
-    const position = get().positions.find((p) => p.id === id);
-    if (!position) return;
-    const account = get().account;
-    if (!account) return;
-
-    // 撤回买入：把当初占用的资金按买入方式回退
-    const totalCost = position.avgCost * position.quantity;
-    const externalFunding = !!position.externalFunding;
-    const principalDelta = externalFunding ? -totalCost : 0;
-    const cashDelta = externalFunding ? 0 : totalCost;
-    const updatedAccount: Account = {
-      ...account,
-      cumulativePrincipal: account.cumulativePrincipal + principalDelta,
-      cashBalance: account.cashBalance + cashDelta,
-      updatedAt: nowIso(),
-    };
-    await saveAccount(updatedAccount);
-    set({ account: updatedAccount });
-
-    // 移除持仓
-    const list = get().positions.filter((p) => p.id !== id);
-    await savePositions(list);
-    set({ positions: list });
-
-    // 刷新收益曲线快照
-    await get().recordSnapshot();
-  },
-
-  async sellPosition(id, sellPrice) {
-    const position = get().positions.find((p) => p.id === id);
-    if (!position) return;
-    const account = get().account;
-    if (!account) return;
-    const price = sellPrice ?? position.currentPrice;
-    const proceeds = price * position.quantity;
-    const realizedPnl = (price - position.avgCost) * position.quantity;
-
-    // 回笼现金
-    const updatedAccount: Account = {
-      ...account,
-      cashBalance: account.cashBalance + proceeds,
-      updatedAt: nowIso(),
-    };
-    await saveAccount(updatedAccount);
-    set({ account: updatedAccount });
-
-    // 删除持仓
-    const list = get().positions.filter((p) => p.id !== id);
-    await savePositions(list);
-    set({ positions: list });
-
-    // 写入 SELL 交易记录
-    await get().addTrade({
-      symbol: position.symbol,
-      name: position.name,
-      type: "SELL",
-      quantity: position.quantity,
-      price: price,
-      fee: 0,
-      amount: proceeds,
-      tradedAt: nowIso(),
-      source: "manual",
-      note: `已实现盈亏 ${realizedPnl >= 0 ? "+" : ""}${realizedPnl.toFixed(2)}`,
-    });
-
-    // 刷新收益曲线
-    await get().recordSnapshot();
-  },
-
-  async refreshPrices() {
-    const positions = get().positions;
-    if (positions.length === 0) return;
-    const quotes = await getBatchQuotes(positions.map((p) => p.symbol));
-    // 行情全部为空时抛错，让调用方（RefreshButton / 自动刷新）能给用户反馈
-    if (Object.keys(quotes).length === 0) {
-      throw new Error("未获取到任何行情数据，请检查股票代码或网络");
-    }
-    const list = positions.map((p) => {
-      const q = quotes[p.symbol];
-      // 拿不到行情 或 返回 0 价格（非交易时段部分股票可能返回 0），保持原样不覆盖
-      if (!q || q.currentPrice <= 0) return p;
-      const marketValue = q.currentPrice * p.quantity;
-      const unrealizedPnl = (q.currentPrice - p.avgCost) * p.quantity;
-      const unrealizedPnlRate =
-        p.avgCost > 0 ? ((q.currentPrice - p.avgCost) / p.avgCost) * 100 : 0;
-      // 行情更新成功后清除导入时的"等待刷新"标记
-      const aiStatusText = p.aiStatusText === "等待刷新" ? "" : p.aiStatusText;
-      return {
-        ...p,
-        currentPrice: q.currentPrice,
-        todayChangeRate: q.changeRate,
-        marketValue,
-        unrealizedPnl,
-        unrealizedPnlRate,
-        aiStatusText,
-        updatedAt: nowIso(),
-      };
-    });
-    await savePositions(list);
-    set({ positions: list });
-    // 行情刷新后写入当日快照，让收益曲线最新点跟随行情
-    await get().recordSnapshot();
-  },
-
   // ====== 交易 ======
   async addTrade(trade) {
     const list = get().trades.slice();
@@ -738,6 +396,7 @@ export const useAppStore = create<AppState>((set, get) => ({
       createdAt: msg.createdAt || nowIso(),
       status: msg.status,
       conversationId: msg.conversationId || get().activeConversationId || undefined,
+      outputJson: msg.outputJson,
       metadata: msg.metadata,
     };
     list.push(newMsg);
@@ -770,252 +429,6 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ messages: trimmed });
   },
 
-  // ====== 会话管理 ======
-  async createConversation() {
-    const list = get().conversations.slice();
-    const now = nowIso();
-    // 标题格式「新会话 YYYY-MM-DD HH:mm」
-    const d = new Date(now);
-    const title = `新会话 ${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-    const conv: Conversation = {
-      id: uid("conv"),
-      title,
-      createdAt: now,
-      updatedAt: now,
-    };
-    list.push(conv);
-    await saveConversations(list);
-    set({ conversations: list, activeConversationId: conv.id });
-  },
-
-  async switchConversation(id) {
-    set({ activeConversationId: id });
-  },
-
-  async renameConversation(id, title) {
-    const list = get().conversations.map((c) =>
-      c.id === id ? { ...c, title, updatedAt: nowIso() } : c
-    );
-    await saveConversations(list);
-    set({ conversations: list });
-  },
-
-  async deleteConversation(id) {
-    const list = get().conversations.filter((c) => c.id !== id);
-    // 删除该会话的所有消息
-    const msgs = get().messages.filter((m) => m.conversationId !== id);
-    await saveConversations(list);
-    await saveMessages(msgs);
-    // 若删的是活跃会话，切换到第一个剩余会话；若无剩余，创建新空白会话
-    let activeId = get().activeConversationId;
-    if (activeId === id) {
-      if (list.length > 0) {
-        activeId = list[0].id;
-      } else {
-        // 无剩余会话，创建空白会话
-        const now = nowIso();
-        const d = new Date(now);
-        const title = `新会话 ${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")} ${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-        const conv: Conversation = { id: uid("conv"), title, createdAt: now, updatedAt: now };
-        list.push(conv);
-        await saveConversations(list);
-        activeId = conv.id;
-      }
-    }
-    set({ conversations: list, messages: msgs, activeConversationId: activeId });
-  },
-
-  // ====== Agent ======
-  async addAgentJob(job) {
-    const list = get().agentJobs.slice();
-    const newJob: AgentJob = {
-      ...job,
-      id: uid("job"),
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-      nextRunAt: job.enabled ? calculateNextRunAt(job as AgentJob) : undefined,
-    };
-    list.push(newJob);
-    await saveAgentJobs(list);
-    set({ agentJobs: list });
-  },
-
-  async updateAgentJob(id, patch) {
-    const list = get().agentJobs.map((j) => {
-      if (j.id !== id) return j;
-      const next: AgentJob = { ...j, ...patch, updatedAt: nowIso() };
-      // 重新计算下次运行时间
-      if (patch.enabled !== undefined || patch.triggerType || patch.intervalMinutes || patch.fixedTimes) {
-        next.nextRunAt = next.enabled ? calculateNextRunAt(next) : undefined;
-      }
-      return next;
-    });
-    await saveAgentJobs(list);
-    set({ agentJobs: list });
-  },
-
-  async removeAgentJob(id) {
-    const list = get().agentJobs.filter((j) => j.id !== id);
-    await saveAgentJobs(list);
-    set({ agentJobs: list });
-  },
-
-  async runJobNow(jobId) {
-    const job = get().agentJobs.find((j) => j.id === jobId);
-    if (!job) return;
-    const model = get().defaultModel();
-    await runAgentJob(job, {
-      account: get().account,
-      positions: get().positions,
-      memories: get().memories,
-      model,
-      onMessage: (msg) => {
-        void get().addMessage(msg);
-      },
-      onRunUpdate: (run) => {
-        void get().updateAgentRun(run);
-      },
-    });
-    // 更新 job 的 nextRunAt
-    await get().updateAgentJob(jobId, {
-      lastRunAt: nowIso(),
-      nextRunAt: job.enabled ? calculateNextRunAt(job) : undefined,
-    });
-  },
-
-  async addAgentRun(run) {
-    const list = get().agentRuns.slice();
-    list.unshift(run);
-    await saveAgentRuns(list);
-    set({ agentRuns: list });
-  },
-
-  async updateAgentRun(run) {
-    let list = get().agentRuns.slice();
-    const idx = list.findIndex((r) => r.id === run.id);
-    if (idx >= 0) {
-      list[idx] = run;
-    } else {
-      list.unshift(run);
-    }
-    await saveAgentRuns(list);
-    set({ agentRuns: list });
-  },
-
-  // ====== 提醒 ======
-  async addAlert(alert) {
-    const list = get().alerts.slice();
-    const newAlert: AlertRule = {
-      ...alert,
-      id: uid("alert"),
-      triggerCount: 0,
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    };
-    list.push(newAlert);
-    await saveAlerts(list);
-    set({ alerts: list });
-  },
-
-  async updateAlert(id, patch) {
-    const list = get().alerts.map((a) =>
-      a.id === id ? { ...a, ...patch, updatedAt: nowIso() } : a
-    );
-    await saveAlerts(list);
-    set({ alerts: list });
-  },
-
-  async removeAlert(id) {
-    const list = get().alerts.filter((a) => a.id !== id);
-    await saveAlerts(list);
-    set({ alerts: list });
-  },
-
-  // 评估所有已启用的风险提醒，触发条件时推送系统通知
-  async checkAlerts() {
-    const { alerts, positions, account } = get();
-    const enabledAlerts = alerts.filter((a) => a.enabled);
-    if (enabledAlerts.length === 0) return;
-
-    // 计算当前总资产
-    const totalAssets =
-      (account?.cashBalance ?? 0) +
-      positions.reduce((sum, p) => sum + p.currentPrice * p.quantity, 0);
-    const principal = account?.cumulativePrincipal ?? 0;
-    // 总资产回撤百分比（相对本金）
-    const drawdownPct = principal > 0
-      ? Math.max(0, (principal - totalAssets) / principal) * 100
-      : 0;
-
-    const now = Date.now();
-    const COOLDOWN_MS = 5 * 60_000; // 同一提醒 5 分钟内不重复触发
-
-    for (const alert of enabledAlerts) {
-      // 冷却：上次触发 5 分钟内跳过
-      if (alert.lastTriggeredAt) {
-        const lastTs = new Date(alert.lastTriggeredAt).getTime();
-        if (now - lastTs < COOLDOWN_MS) continue;
-      }
-
-      const { metric, operator, value, symbol } = alert.condition;
-
-      // 确定要检查的持仓
-      const targetPositions = symbol
-        ? positions.filter((p) => p.symbol === symbol || p.symbol === symbol.replace(/\.(SH|SZ|BJ)$/i, ""))
-        : positions;
-
-      let triggeredValue: number | null = null;
-      let triggeredLabel = "";
-
-      if (metric === "total_drawdown") {
-        triggeredValue = drawdownPct;
-        triggeredLabel = `总资产回撤 ${drawdownPct.toFixed(2)}%`;
-      } else if (targetPositions.length > 0) {
-        // 取最严重的（最接近触发条件的值）
-        for (const p of targetPositions) {
-          let currentValue: number | null = null;
-          if (metric === "price") {
-            currentValue = p.currentPrice;
-          } else if (metric === "change_rate") {
-            currentValue = p.todayChangeRate ?? 0;
-          } else if (metric === "pnl_rate") {
-            currentValue = p.unrealizedPnlRate ?? 0;
-          }
-          if (currentValue === null) continue;
-
-          const isTriggered =
-            operator === "above" ? currentValue > value :
-            operator === "below" ? currentValue < value :
-            false;
-
-          if (isTriggered) {
-            triggeredValue = currentValue;
-            triggeredLabel = `${p.name}(${p.symbol}) ${metric === "price" ? "价格" : metric === "change_rate" ? "涨跌幅" : "收益率"} ${currentValue.toFixed(2)}`;
-            break;
-          }
-        }
-      }
-
-      if (triggeredValue !== null) {
-        // 推送系统通知
-        await notifyAlertTriggered(alert.name, `${triggeredLabel} ${operator === "above" ? "高于" : "低于"} ${value}`);
-        // 更新触发记录
-        await get().updateAlert(alert.id, {
-          lastTriggeredAt: nowIso(),
-          triggerCount: alert.triggerCount + 1,
-        });
-        // 写入聊天消息
-        await get().addMessage({
-          id: uid("msg"),
-          role: "agent",
-          type: "agent_run",
-          content: `**风险提醒触发**：${alert.name}\n\n${triggeredLabel} ${operator === "above" ? "高于" : "低于"} 阈值 ${value}`,
-          createdAt: nowIso(),
-        });
-      }
-    }
-  },
-
   // ====== 记忆 ======
   async addMemory(mem) {
     const list = get().memories.slice();
@@ -1044,60 +457,10 @@ export const useAppStore = create<AppState>((set, get) => ({
     set({ memories: list });
   },
 
-  // ====== 模型 ======
-  async addModel(m) {
-    const list = get().models.slice();
-    const newM: AiModelConfig = {
-      ...m,
-      id: uid("model"),
-      createdAt: nowIso(),
-      updatedAt: nowIso(),
-    };
-    // 如果设为默认，取消其他默认
-    if (newM.isDefault) {
-      for (const item of list) item.isDefault = false;
-    }
-    list.push(newM);
-    await saveModels(list);
-    set({ models: list });
-  },
-
-  async updateModel(id, patch) {
-    let list = get().models.map((m) =>
-      m.id === id ? { ...m, ...patch, updatedAt: nowIso() } : m
-    );
-    // 如果设为默认，取消其他默认
-    if (patch.isDefault) {
-      list = list.map((m) => (m.id === id ? m : { ...m, isDefault: false }));
-    }
-    await saveModels(list);
-    set({ models: list });
-  },
-
-  async removeModel(id) {
-    // 先清理系统凭据中残留的 API Key（若存在 apiKeyRef）
-    const model = get().models.find((m) => m.id === id);
-    if (model?.apiKeyRef) {
-      try {
-        await deleteApiKey(model.apiKeyRef);
-      } catch (e) {
-        // 凭据删除失败不应阻塞模型删除流程，仅记录日志
-        console.warn("[appStore] 删除模型时清理凭据失败", e);
-      }
-    }
-    const list = get().models.filter((m) => m.id !== id);
-    await saveModels(list);
-    set({ models: list });
-  },
-
-  defaultModel() {
-    return get().models.find((m) => m.isEnabled && m.isDefault) || get().models.find((m) => m.isEnabled) || null;
-  },
-
   // ====== 数据源 ======
   async addDataSource(s) {
     const list = get().dataSources.slice();
-    const newS: MarketDataSource = { ...s, id: uid("ds") };
+    const newS = { ...s, id: uid("ds") };
     if (newS.isDefault) {
       for (const item of list) item.isDefault = false;
     }
@@ -1137,7 +500,15 @@ export const useAppStore = create<AppState>((set, get) => ({
     const messages = get().messages;
     if (!account) {
       return {
-        account: { ...account!, id: "", name: "", cumulativePrincipal: 0, cashBalance: 0, currency: "CNY", createdAt: "", updatedAt: "" },
+        account: {
+          id: "",
+          name: "",
+          cumulativePrincipal: 0,
+          cashBalance: 0,
+          currency: "CNY",
+          createdAt: "",
+          updatedAt: "",
+        },
         positionMarketValue: 0,
         totalAsset: 0,
         totalPnl: 0,

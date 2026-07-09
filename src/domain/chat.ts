@@ -18,6 +18,8 @@ export interface ChatMessage {
   status?: "sending" | "sent" | "failed";
   // 所属会话 id（旧消息无此字段视为默认会话）
   conversationId?: string;
+  // Agent 执行结果的结构化输出（type=agent_run 时存储 AgentAnalysisOutput，含 dimensions 等）
+  outputJson?: Record<string, unknown>;
   // 确认卡片元数据
   metadata?: {
     intent?: string; // 意图：update_account / add_position / sell / create_agent_job / set_alert / save_memory

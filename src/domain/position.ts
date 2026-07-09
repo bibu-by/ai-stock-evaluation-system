@@ -43,9 +43,18 @@ export interface Quote {
   volume: number;
   turnover: number; // 成交额
   turnoverRate?: number; // 换手率
-  pe?: number;
+  pe?: number; // PE(TTM) - 语义对齐为 PE(TTM)
   pb?: number;
   updatedAt: string;
+  // 基本面字段（腾讯财经补充）
+  peTtm?: number;
+  peStatic?: number;
+  marketCapYi?: number; // 总市值(亿)
+  floatMarketCapYi?: number; // 流通市值(亿)
+  limitUp?: number;
+  limitDown?: number;
+  // 行情数据来源（"sina" / "tencent" / "sina+tencent"），体现数据源 fallback
+  source?: string;
 }
 
 // K 线
@@ -56,9 +65,21 @@ export interface KlineBar {
   high: number;
   low: number;
   volume: number;
+  // 均线（MA5/MA10/MA20，前几根 K 线可能为 undefined）
+  ma5?: number;
+  ma10?: number;
+  ma20?: number;
 }
 
-export type KlinePeriod = "1m" | "5m" | "15m" | "30m" | "60m" | "1d" | "1w";
+export type KlinePeriod = "1m" | "5m" | "15m" | "30m" | "60m" | "1d" | "1w" | "1M";
+
+// 公告条目（对应 Rust 端 AnnouncementItem，camelCase）
+export interface AnnouncementItem {
+  title: string;
+  publishTime: string; // ISO 时间或日期字符串
+  announcementType?: string; // 公告类型（如"财报"/"重大事项"）
+  url?: string;
+}
 
 export const AI_STATUS_LABEL: Record<AiStatus, string> = {
   watch: "观察",

@@ -19,6 +19,10 @@ import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Markdown } from "@/components/common/Markdown";
+import { DimensionBadges } from "@/components/common/DimensionBadges";
+import { DimensionRadarChart } from "@/components/common/DimensionRadarChart";
+import { MiniKlineChartWrapper } from "@/components/common/MiniKlineChart";
+import type { AnalysisDimensions } from "@/domain/agent";
 import {
   defaultAiGateway,
   parseUserInput,
@@ -32,6 +36,9 @@ import type { ChatMessage, ParsedDraft } from "@/domain/chat";
 import { buildSlidingWindowMessages } from "@/services/tokenEstimator";
 import { ConversationSwitcher } from "@/components/app-shell/ConversationSwitcher";
 import { SLIDING_WINDOW_MAX_TOKENS } from "@/domain/constants";
+
+// 股票代码匹配（如 600519.SH / 000001.SZ / 830799.BJ）
+const STOCK_CODE_REGEX = /\b(\d{6}\.(?:SH|SZ|BJ))\b/g;
 
 export function ChatPanel() {
   // 使用 selector 按字段订阅，避免无关状态变更触发重渲染
@@ -523,6 +530,12 @@ function MessageItem({
   const showRerunAgent = isErr && !!agentJobId;
   const hasActions = showRetryOnUser || showEditOnUser || showRetryOnError || showRerunAgent;
 
+  // 从 agent 消息内容中提取股票代码（如 600519.SH），用于渲染 K 线图
+  const stockCodes = isAgent
+    ? Array.from(message.content.matchAll(STOCK_CODE_REGEX)).map((m) => m[1])
+    : [];
+  const uniqueCodes = [...new Set(stockCodes)];
+
   return (
     <div className={cn("flex gap-2", isUser ? "flex-row-reverse" : "flex-row")}>
       <div
@@ -569,6 +582,27 @@ function MessageItem({
             <Markdown content={message.content} />
           )}
         </div>
+
+        {/* K 线图：agent 消息含股票代码时渲染（最多 3 个，失败静默降级） */}
+        {isAgent && uniqueCodes.length > 0 && (
+          <div className="mt-2 space-y-2">
+            {uniqueCodes.slice(0, 3).map((code) => (
+              <MiniKlineChartWrapper key={code} symbol={code} />
+            ))}
+          </div>
+        )}
+
+        {/* 多维度分析：5 维评分 badge + 雷达图（仅 agent_run 且有 dimensions 时渲染） */}
+        {message.type === "agent_run" && !!message.outputJson?.dimensions && (
+          <div className="mt-2 w-full space-y-2">
+            <DimensionBadges
+              dimensions={message.outputJson.dimensions as AnalysisDimensions}
+            />
+            <DimensionRadarChart
+              dimensions={message.outputJson.dimensions as AnalysisDimensions}
+            />
+          </div>
+        )}
 
         {/* 确认卡片按钮 */}
         {isConfirm && !confirmed && !rejected && (

@@ -60,6 +60,12 @@
     "security": {
       "csp": "default-src 'self'; img-src 'self' asset: data: https://*; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self' https://* http://localhost:* http://127.0.0.1:* ipc: http://ipc.localhost; font-src 'self' data:"
     },
+    "systemTray": {
+      "iconPath": "icons/128x128.png",
+      "iconAsTemplate": false,
+      "menuOnLeftClick": false,
+      "title": "AI 炒股评估系统"
+    },
     "windows": [
       {
         "fullscreen": false,

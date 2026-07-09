@@ -1,5 +1,5 @@
 // 应用整体三栏布局
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import { PanelRightOpen } from "lucide-react";
 import { useAppStore } from "@/store/appStore";
 import { cn } from "@/lib/utils";
@@ -8,6 +8,9 @@ import { TopBar } from "./TopBar";
 import { ChatPanel } from "./ChatPanel";
 import { AgentScheduler } from "@/services/scheduler";
 import type { AgentJob } from "@/domain/agent";
+
+const MIN_CHAT_WIDTH = 280;
+const MAX_CHAT_WIDTH_RATIO = 0.6;
 
 const scheduler = new AgentScheduler(async (job: AgentJob) => {
   // 触发定时任务
@@ -53,6 +56,41 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
   const showChat = chatMode === "open" || chatMode === "collapsed";
 
+  // 右侧聊天面板宽度：open 时可拖拽调整，collapsed 时固定 60px
+  const [chatWidth, setChatWidth] = useState(420);
+  const dragState = useRef<{ startX: number; startWidth: number } | null>(null);
+
+  const handlePointerMove = useCallback((e: PointerEvent) => {
+    if (!dragState.current) return;
+    const { startX, startWidth } = dragState.current;
+    const delta = startX - e.clientX;
+    const maxWidth = Math.max(MIN_CHAT_WIDTH, window.innerWidth * MAX_CHAT_WIDTH_RATIO);
+    const nextWidth = Math.min(maxWidth, Math.max(MIN_CHAT_WIDTH, startWidth + delta));
+    setChatWidth(nextWidth);
+  }, []);
+
+  const handlePointerUp = useCallback((e: PointerEvent) => {
+    if (!dragState.current) return;
+    (e.target as Element).releasePointerCapture?.(e.pointerId);
+    dragState.current = null;
+    document.removeEventListener("pointermove", handlePointerMove);
+    document.removeEventListener("pointerup", handlePointerUp);
+    document.body.classList.remove("select-none");
+  }, [handlePointerMove]);
+
+  const handlePointerDown = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      e.currentTarget.setPointerCapture(e.pointerId);
+      dragState.current = { startX: e.clientX, startWidth: chatWidth };
+      document.body.classList.add("select-none");
+      document.addEventListener("pointermove", handlePointerMove);
+      document.addEventListener("pointerup", handlePointerUp);
+    },
+    [chatWidth, handlePointerMove, handlePointerUp]
+  );
+
   return (
     <div className="flex h-full w-full overflow-hidden bg-background text-foreground">
       {/* 左侧导航 */}
@@ -66,15 +104,28 @@ export function AppShell({ children }: { children: React.ReactNode }) {
 
       {/* 右侧聊天面板 */}
       {showChat ? (
-        <aside
-          className={cn(
-            "shrink-0 border-l border-border bg-card",
-            chatMode === "open" ? "w-[420px]" : "w-[60px]"
+        <>
+          {/* 可拖拽分隔线：仅在聊天面板展开时显示 */}
+          {chatMode === "open" && (
+            <div
+              className="group relative z-10 w-1 shrink-0 bg-border hover:bg-primary/50 active:bg-primary/70"
+              style={{ cursor: "col-resize" }}
+              onPointerDown={handlePointerDown}
+              title="拖动调整宽度"
+            >
+              <div className="absolute inset-y-0 left-1/2 h-full w-2 -translate-x-1/2 group-hover:bg-primary/10" />
+            </div>
           )}
-        >
-          {chatMode === "open" ? (
-            <ChatPanel />
-          ) : (
+          <aside
+            className={cn(
+              "shrink-0 bg-card",
+              chatMode === "open" ? "" : "w-[60px] border-l border-border"
+            )}
+            style={chatMode === "open" ? { width: chatWidth } : undefined}
+          >
+            {chatMode === "open" ? (
+              <ChatPanel />
+            ) : (
             <div className="flex h-full flex-col items-center justify-start gap-2 pt-3">
               <button
                 onClick={() => setChatMode("open")}
@@ -86,6 +137,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             </div>
           )}
         </aside>
+      </>
       ) : (
         <aside className="flex w-[60px] shrink-0 flex-col items-center justify-start gap-2 border-l border-border bg-card/50 pt-3">
           <button

@@ -8,8 +8,9 @@ import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
 import { Select } from "@/components/ui/select";
 import { Dialog, DialogHeader, DialogTitle, DialogContent, DialogFooter } from "@/components/ui/dialog";
-import { Download, Moon, Sun, Wallet } from "lucide-react";
+import { Download, FileDown, Moon, Sun, Wallet } from "lucide-react";
 import { exportAllData, clearAllData } from "@/services/localStore";
+import { exportOhlcvCsv, saveOhlcvCsvFile } from "@/services/backtest";
 import { formatMoney } from "@/lib/format";
 
 export function SettingsPage() {
@@ -31,6 +32,11 @@ export function SettingsPage() {
   const [withdrawAmount, setWithdrawAmount] = useState("");
   const [clearOpen, setClearOpen] = useState(false);
   const [resetOpen, setResetOpen] = useState(false);
+
+  // 回测数据导出
+  const [btSymbols, setBtSymbols] = useState("");
+  const [btCount, setBtCount] = useState("250");
+  const [btExporting, setBtExporting] = useState(false);
 
   const handleDeposit = async () => {
     const amount = Number(depositAmount);
@@ -74,6 +80,44 @@ export function SettingsPage() {
 
   const handleClear = () => {
     setClearOpen(true);
+  };
+
+  // 导出回测 OHLCV CSV：取第一个 symbol 拉数据 → 弹 Tauri save 对话框保存
+  const handleExportOhlcv = async () => {
+    const symbols = btSymbols
+      .split(",")
+      .map(s => s.trim())
+      .filter(Boolean);
+    if (symbols.length === 0) {
+      alert("请输入至少一个股票代码（逗号分隔）");
+      return;
+    }
+    const count = Number(btCount);
+    if (!Number.isFinite(count) || count <= 0) {
+      alert("数据条数需为正整数");
+      return;
+    }
+    const symbol = symbols[0];
+    setBtExporting(true);
+    try {
+      const csv = await exportOhlcvCsv(symbol, count);
+      if (!csv) {
+        alert("未获取到 K 线数据（浏览器环境不可用，请在 Tauri 应用中导出）");
+        return;
+      }
+      const filePath = await saveOhlcvCsvFile(symbol, csv);
+      if (filePath) {
+        alert(`已导出 ${symbol} OHLCV CSV：\n${filePath}`);
+      } else {
+        // 用户取消 或 浏览器环境降级
+        console.warn("[SettingsPage] saveOhlcvCsvFile 返回 null（已取消或环境不支持）");
+      }
+    } catch (e) {
+      console.error("[SettingsPage] 导出回测 CSV 失败", e);
+      alert((e as Error).message || "导出失败");
+    } finally {
+      setBtExporting(false);
+    }
   };
 
   return (
@@ -280,6 +324,16 @@ export function SettingsPage() {
             onCheckedChange={(v) => void setConfig({ tradingHoursOnlyByDefault: v })}
           />
         </div>
+        <div className="mt-3 flex items-center justify-between">
+          <div>
+            <div className="text-sm">关闭窗口时隐藏到托盘</div>
+            <div className="text-xs text-muted-foreground">隐藏后 Agent 保持后台运行，可从托盘恢复窗口</div>
+          </div>
+          <Switch
+            checked={config?.closeToTray ?? true}
+            onCheckedChange={(v) => void setConfig({ closeToTray: v })}
+          />
+        </div>
       </Card>
 
       {/* 数据管理 */}
@@ -337,6 +391,49 @@ export function SettingsPage() {
               重新加载
             </Button>
           </div>
+        </div>
+      </Card>
+
+      {/* 回测数据导出 */}
+      <Card className="p-4">
+        <div className="mb-3 flex items-center gap-2">
+          <FileDown className="h-4 w-4 text-primary" />
+          <h2 className="text-sm font-semibold">回测数据导出</h2>
+        </div>
+        <div className="space-y-3">
+          <div className="space-y-1">
+            <Label>股票代码（多个用逗号分隔）</Label>
+            <Input
+              value={btSymbols}
+              onChange={(e) => setBtSymbols(e.target.value)}
+              placeholder="如：600519.SH,000858.SZ"
+            />
+            <p className="text-xs text-muted-foreground">
+              导出标准 OHLCV CSV（date,open,high,low,close,volume），供 backtrader / qlib 消费
+            </p>
+          </div>
+          <div className="space-y-1">
+            <Label>数据条数（日 K，默认 250）</Label>
+            <Input
+              type="number"
+              value={btCount}
+              onChange={(e) => setBtCount(e.target.value)}
+              placeholder="250"
+            />
+          </div>
+          <div className="flex justify-end">
+            <Button
+              size="sm"
+              disabled={btExporting}
+              onClick={() => void handleExportOhlcv()}
+            >
+              <Download className="h-3.5 w-3.5" />
+              {btExporting ? "导出中..." : "导出 CSV"}
+            </Button>
+          </div>
+          <p className="text-[10px] text-muted-foreground">
+            说明：第一版只做数据管道，不包含完整回测引擎；多股票导出请逐个执行。
+          </p>
         </div>
       </Card>
 

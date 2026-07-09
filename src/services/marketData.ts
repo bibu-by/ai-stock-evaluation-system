@@ -6,7 +6,7 @@
 //   - Demo 模式：允许返回 mock 行情（仅用于体验界面，不作为真实价格）
 //   - Real 模式：行情失败必须抛错提示，绝不伪造价格误导用户
 
-import type { Quote, KlineBar, KlinePeriod } from "@/domain/position";
+import type { Quote, KlineBar, KlinePeriod, AnnouncementItem } from "@/domain/position";
 import type { MarketDataSource } from "@/domain/config";
 import { isTauri } from "@/lib/utils";
 import { QUOTE_CACHE_MS, QUOTE_CACHE_MAX_SIZE } from "@/domain/constants";
@@ -146,6 +146,29 @@ interface QuotePayload {
   volume: number;
   turnover: number;
   updated_at: string;
+  // 基本面字段（腾讯财经补充）
+  pe_ttm?: number;
+  pe_static?: number;
+  pb?: number;
+  market_cap_yi?: number;
+  float_market_cap_yi?: number;
+  turnover_rate?: number;
+  limit_up?: number;
+  limit_down?: number;
+  source?: string;
+}
+
+// Rust 端 get_kline 返回的载荷
+interface KlineBarPayload {
+  time: string;
+  open: number;
+  close: number;
+  high: number;
+  low: number;
+  volume: number;
+  ma5?: number;
+  ma10?: number;
+  ma20?: number;
 }
 
 function payloadToQuote(p: QuotePayload): Quote {
@@ -161,6 +184,17 @@ function payloadToQuote(p: QuotePayload): Quote {
     volume: p.volume,
     turnover: p.turnover,
     updatedAt: p.updated_at,
+    // 基本面字段（腾讯补充，可能为 undefined）
+    pe: p.pe_ttm,
+    peTtm: p.pe_ttm,
+    peStatic: p.pe_static,
+    pb: p.pb,
+    turnoverRate: p.turnover_rate,
+    marketCapYi: p.market_cap_yi,
+    floatMarketCapYi: p.float_market_cap_yi,
+    limitUp: p.limit_up,
+    limitDown: p.limit_down,
+    source: p.source,
   };
 }
 
@@ -257,12 +291,104 @@ async function getBatchQuotesFromTauri(symbols: string[]): Promise<Record<string
   }
 }
 
-// K 线（第一版 mock，仅 Demo 模式使用）
+// K 线数据
+// - Demo 模式：返回 mock K 线（体验界面用）
+// - Real 模式 + Tauri 环境：调用 Rust get_kline 命令（腾讯财经，前复权日 K + 本地算 MA）
+// - 浏览器开发环境：返回空数组（避免 CORS）
 export async function getKline(
   symbol: string,
-  period: KlinePeriod = "1d"
+  period: KlinePeriod = "1d",
+  count: number = 60
 ): Promise<KlineBar[]> {
-  return mockKline(symbol, period);
+  // Demo 模式：返回 mock
+  if (marketMode === "demo") {
+    return mockKline(symbol, period);
+  }
+
+  // Real 模式：Tauri 命令
+  if (isTauri()) {
+    return getKlineFromTauri(symbol, period, count);
+  }
+
+  // 浏览器 fallback：无 HTTP 直连，避免 CORS
+  console.warn("[marketData] 浏览器环境下 K 线接口不可用，请在 Tauri 应用中调用");
+  return [];
+}
+
+// 通过 Tauri command 调用 Rust 端 get_kline
+async function getKlineFromTauri(
+  symbol: string,
+  period: string,
+  count: number
+): Promise<KlineBar[]> {
+  try {
+    // @ts-ignore - Tauri v1 在浏览器环境下不存在该模块
+    const { invoke } = await import("@tauri-apps/api/tauri");
+    const payloads = await invoke<KlineBarPayload[]>("get_kline", { symbol, period, count });
+    return payloads.map((p) => ({
+      time: p.time,
+      open: p.open,
+      close: p.close,
+      high: p.high,
+      low: p.low,
+      volume: p.volume,
+      ma5: p.ma5,
+      ma10: p.ma10,
+      ma20: p.ma20,
+    }));
+  } catch (e) {
+    console.error("[marketData] Tauri K 线请求失败", e);
+    throw e;
+  }
+}
+
+// 获取股票最新公告列表（东方财富公告接口，仅 Tauri 环境可用）
+// 浏览器环境下不可用，降级为空数组。
+export async function getAnnouncements(
+  symbol: string,
+  count: number = 5
+): Promise<AnnouncementItem[]> {
+  if (!isTauri()) {
+    console.warn("[marketData] 浏览器环境下公告接口不可用");
+    return [];
+  }
+  try {
+    // @ts-ignore - Tauri v1 在浏览器环境下不存在该模块
+    const { invoke } = await import("@tauri-apps/api/tauri");
+    return await invoke<AnnouncementItem[]>("get_announcements", { symbol, count });
+  } catch (e) {
+    console.warn(`[marketData] 获取 ${symbol} 公告失败`, e);
+    return []; // 降级为空数组
+  }
+}
+
+// 研报（机构评级 / EPS 预测 / 摘要），仅 Tauri 环境可用。
+// 浏览器环境下不可用，降级为空数组。
+export interface ResearchReport {
+  title: string;
+  orgName: string;
+  rating: string | null;
+  publishDate: string;
+  epsForecast: string | null;
+  summary: string | null;
+}
+
+export async function getResearchReports(
+  symbol: string,
+  count: number = 10
+): Promise<ResearchReport[]> {
+  if (!isTauri()) {
+    console.warn("[marketData] 浏览器环境下研报接口不可用");
+    return [];
+  }
+  try {
+    // @ts-ignore - Tauri v1 在浏览器环境下不存在该模块
+    const { invoke } = await import("@tauri-apps/api/tauri");
+    return await invoke<ResearchReport[]>("get_research_reports", { symbol, count });
+  } catch (e) {
+    console.warn("[marketData] 获取研报失败", e);
+    return [];
+  }
 }
 
 // 市场概况（mock，仅 Demo 模式使用）

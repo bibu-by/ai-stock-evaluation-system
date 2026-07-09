@@ -7,6 +7,7 @@ import { PositionsPage } from "@/pages/PositionsPage";
 import { TradesPage } from "@/pages/TradesPage";
 import { AgentPage } from "@/pages/AgentPage";
 import { DecisionNotesPage } from "@/pages/DecisionNotesPage";
+import { ResearchReportsPage } from "@/pages/ResearchReportsPage";
 import { MemoryPage } from "@/pages/MemoryPage";
 import { ModelSettingsPage } from "@/pages/ModelSettingsPage";
 import { DataSourceSettingsPage } from "@/pages/DataSourceSettingsPage";
@@ -69,6 +70,7 @@ function App() {
       {currentPage === "trades" && <TradesPage />}
       {currentPage === "agent" && <AgentPage />}
       {currentPage === "decision" && <DecisionNotesPage />}
+      {currentPage === "research" && <ResearchReportsPage />}
       {currentPage === "memory" && <MemoryPage />}
       {currentPage === "model" && <ModelSettingsPage />}
       {currentPage === "data-source" && <DataSourceSettingsPage />}
